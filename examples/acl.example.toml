@@ -1,0 +1,9 @@
+[[clients]]
+name = "alice-laptop"
+public_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+inner_ip = "10.8.0.5"
+
+[[clients]]
+name = "bob-phone"
+public_key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+inner_ip = "10.8.0.6"

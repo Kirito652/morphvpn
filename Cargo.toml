@@ -1,0 +1,41 @@
+[package]
+name = "morphvpn"
+version = "0.1.0"
+edition = "2021"
+description = "Experimental beta VPN tunnel prototype written by a self-taught developer."
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "morphvpn"
+path = "src/main.rs"
+
+[dependencies]
+tokio       = { version = "1", features = ["full"] }
+chacha20poly1305 = { version = "0.10", features = ["std"] }
+rand        = "0.8"
+sha2        = "0.10"
+hkdf        = "0.12"
+hmac        = "0.12"
+hex         = "0.4"
+anyhow      = "1"
+tracing     = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+clap        = { version = "4", features = ["derive"] }
+bytes       = "1"
+tun         = { version = "0.6", features = ["async"] }
+snow        = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+zeroize     = "1"
+serde       = { version = "1", features = ["derive"] }
+toml        = "0.8"
+windows     = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+futures-util = "0.3"
+rtnetlink   = "0.14"
