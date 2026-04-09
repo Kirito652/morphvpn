@@ -1,4 +1,12 @@
-# MorphVPN
+> Disclaimer: This is a 0.1.0 beta. The project is undergoing a major architectural redesign. Stability is not guaranteed. This is a solo project by a self-taught developer for educational and practical purposes. Use at your own risk.
+
+# MorphVPN 🛡️
+![Status](https://img.shields.io/badge/status-pre--release-yellow)
+![Version](https://img.shields.io/badge/version-0.1.0--beta-blue)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+
+MorphVPN is a high-performance stealth VPN tunnel written in Rust, utilizing the Noise Protocol and advanced traffic obfuscation.
+
 
 > Experimental Rust VPN tunnel prototype.  
 > Beta software. Built by one self-taught developer. Shared as-is.
@@ -25,7 +33,8 @@ It was written by one self-taught developer. If you have suggestions, correction
 
 ## What Is Actually In This Repo
 
-- Rust source code for the tunnel prototype in `src/`
+- Rust source code for the current tunnel binary in `src/`
+- Shared protocol building blocks for the v1 redesign in `morphvpn-protocol/`
 - Example ACL configuration in `examples/`
 - Architecture notes and RFC-style documentation in `docs/`
 - Cargo project files for building with Rust
@@ -63,14 +72,18 @@ cargo run -- keygen --private-out client.key --public-out client.pub
 Run the example server:
 
 ```bash
-cargo run -- server --bind 0.0.0.0:51820 --psk <HEX32> --private-key server.key --acl examples/acl.example.toml --tun tun0
+export MORPHVPN_PSK_FILE=server.psk
+cargo run -- server --bind 0.0.0.0:51820 --private-key server.key --acl examples/acl.example.toml --tun tun0
 ```
 
 Run the example client:
 
 ```bash
-cargo run -- client --server 203.0.113.10:51820 --psk <HEX32> --private-key client.key --server-public-key server.pub --tun tun1 --tun-ip 10.8.0.5
+export MORPHVPN_PSK_FILE=client.psk
+cargo run -- client --server 203.0.113.10:51820 --private-key client.key --server-public-key server.pub --tun tun1 --tun-ip 10.8.0.5
 ```
+
+The CLI no longer accepts a plaintext `--psk` argument. Use `--psk-file`, `MORPHVPN_PSK_FILE`, or `MORPHVPN_PSK`.
 
 ## Requirements
 
@@ -82,9 +95,10 @@ cargo run -- client --server 203.0.113.10:51820 --psk <HEX32> --private-key clie
 
 ```text
 publish/
-|- src/        Rust source code
-|- examples/   Example ACL file
-|- docs/       Notes and RFC-style docs
+|- src/                 Current binary/runtime code
+|- morphvpn-protocol/   Shared protocol crate for v1 wire/cookie/replay/handshake work
+|- examples/            Example ACL file
+|- docs/                Notes and RFC-style docs
 |- Cargo.toml
 |- Cargo.lock
 `- README.md

@@ -1,4 +1,12 @@
-# MorphVPN
+> Внимание: Это пре-релиз версии 0.1.0 beta. Проект находится в активной стадии разработки и полной переработки архитектуры. На текущий момент стабильность не гарантируется. Проект пишется одним человеком-самоучкой в образовательных и практических целях. Используйте на свой страх и риск.
+
+# MorphVPN 🛡️
+![Status](https://img.shields.io/badge/статус-пре--релиз-yellow)
+![Version](https://img.shields.io/badge/версия-0.1.0--beta-blue)
+![Лицензия](https://img.shields.io/badge/лицензия-MIT-green.svg)
+
+**MorphVPN** — это высокопроизводительный стелс-VPN туннель на языке Rust, использующий Noise Protocol и продвинутые методы обфускации трафика.
+
 
 > Экспериментальный VPN-туннель на Rust.  
 > Бета-проект. Написан одним самоучкой. Публикуется как есть.
@@ -25,7 +33,8 @@ MorphVPN все еще находится в стадии beta.
 
 ## Что Реально Есть В Репозитории
 
-- Исходный Rust-код туннеля в `src/`
+- Исходный Rust-код текущего бинарника в `src/`
+- Общий protocol crate для v1-переработки в `morphvpn-protocol/`
 - Пример ACL-конфигурации в `examples/`
 - Архитектурные заметки и RFC-документы в `docs/`
 - Cargo-файлы для сборки проекта
@@ -63,14 +72,18 @@ cargo run -- keygen --private-out client.key --public-out client.pub
 Пример запуска сервера:
 
 ```bash
-cargo run -- server --bind 0.0.0.0:51820 --psk <HEX32> --private-key server.key --acl examples/acl.example.toml --tun tun0
+export MORPHVPN_PSK_FILE=server.psk
+cargo run -- server --bind 0.0.0.0:51820 --private-key server.key --acl examples/acl.example.toml --tun tun0
 ```
 
 Пример запуска клиента:
 
 ```bash
-cargo run -- client --server 203.0.113.10:51820 --psk <HEX32> --private-key client.key --server-public-key server.pub --tun tun1 --tun-ip 10.8.0.5
+export MORPHVPN_PSK_FILE=client.psk
+cargo run -- client --server 203.0.113.10:51820 --private-key client.key --server-public-key server.pub --tun tun1 --tun-ip 10.8.0.5
 ```
+
+CLI больше не принимает открытый `--psk`. Используйте `--psk-file`, `MORPHVPN_PSK_FILE` или `MORPHVPN_PSK`.
 
 ## Что Нужно Для Запуска
 
@@ -82,9 +95,10 @@ cargo run -- client --server 203.0.113.10:51820 --psk <HEX32> --private-key clie
 
 ```text
 publish/
-├─ src/        Исходный код Rust
-├─ examples/   Пример ACL-файла
-├─ docs/       Заметки и RFC-документы
+├─ src/                 Код текущего бинарника/runtime
+├─ morphvpn-protocol/   Общий protocol crate для v1 wire/cookie/replay/handshake
+├─ examples/            Пример ACL-файла
+├─ docs/                Заметки и RFC-документы
 ├─ Cargo.toml
 ├─ Cargo.lock
 └─ README.ru.md

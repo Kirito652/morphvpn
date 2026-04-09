@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Context, Result};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
+#[cfg(test)]
+use std::net::Ipv4Addr;
 use std::process::Command;
 use tracing::info;
 #[cfg(target_os = "linux")]
@@ -120,12 +122,12 @@ pub fn setup_server(config: NetConfig) -> Result<NetworkGuard> {
     {
         let adapter = windows_resolve_adapter_name(&config.tun_name)?;
         windows_assign_ip(&adapter, &config.tun_ip, config.prefix_len)?;
-        return Ok(NetworkGuard {
+        Ok(NetworkGuard {
             config,
             pinned_server_ip: None,
             is_server: true,
             cleaned_up: false,
-        });
+        })
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -144,24 +146,24 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
     {
         reapply_client_tun(&config)?;
 
-        return Ok(NetworkGuard {
+        Ok(NetworkGuard {
             pinned_server_ip: config.server_ip,
             config,
             is_server: false,
             cleaned_up: false,
-        });
+        })
     }
 
     #[cfg(target_os = "windows")]
     {
         reapply_client_tun(&config)?;
 
-        return Ok(NetworkGuard {
+        Ok(NetworkGuard {
             pinned_server_ip: config.server_ip,
             config,
             is_server: false,
             cleaned_up: false,
-        });
+        })
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -175,20 +177,21 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
     }
 }
 
+#[allow(dead_code)]
 pub fn reapply_server_tun(config: &NetConfig) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         linux_assign_ip(&config.tun_name, &config.tun_ip, config.prefix_len)?;
         linux_link_up(&config.tun_name)?;
         linux_enable_ip_forward()?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(target_os = "windows")]
     {
         let adapter = windows_resolve_adapter_name(&config.tun_name)?;
         windows_assign_ip(&adapter, &config.tun_ip, config.prefix_len)?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -209,7 +212,7 @@ pub fn reapply_client_tun(config: &NetConfig) -> Result<()> {
             linux_add_host_route(server_ip, route)?;
         }
         linux_add_split_default_routes(&config.gateway_ip, &config.tun_name)?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(target_os = "windows")]
@@ -223,7 +226,7 @@ pub fn reapply_client_tun(config: &NetConfig) -> Result<()> {
             }
         }
         windows_add_split_default_routes(&config.gateway_ip)?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -233,6 +236,7 @@ pub fn reapply_client_tun(config: &NetConfig) -> Result<()> {
     }
 }
 
+#[allow(dead_code)]
 pub async fn update_tun_mtu(iface: &str, mtu: u32) -> Result<()> {
     let safe_mtu = mtu.clamp(576, 9000);
 
@@ -243,7 +247,7 @@ pub async fn update_tun_mtu(iface: &str, mtu: u32) -> Result<()> {
 
     #[cfg(target_os = "windows")]
     {
-        return windows_update_tun_mtu(iface, safe_mtu);
+        windows_update_tun_mtu(iface, safe_mtu)
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -285,6 +289,7 @@ async fn linux_update_tun_mtu(iface: &str, mtu: u32) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 fn windows_update_tun_mtu(iface: &str, mtu: u32) -> Result<()> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -688,6 +693,7 @@ fn windows_remove_split_default_routes(gateway: &str) {
     );
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn host_route_target(ip: IpAddr) -> String {
     match ip {
         IpAddr::V4(addr) => format!("{addr}/32"),

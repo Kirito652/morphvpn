@@ -1,11 +1,11 @@
-use crate::crypto::{parse_hex_32, Seed, StaticIdentity};
 use anyhow::{Context, Result};
+use morphvpn_protocol::handshake::{Seed, StaticIdentity};
 use std::fs;
 use std::path::Path;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 pub fn generate_x25519_identity() -> StaticIdentity {
-    crate::crypto::generate_static_identity()
+    StaticIdentity::generate()
 }
 
 pub fn write_private_key_file(path: &Path, private_key: &Seed) -> Result<()> {
@@ -56,4 +56,15 @@ pub fn read_public_key_arg(value: &str) -> Result<Seed> {
         return read_public_key_file(Path::new(value));
     }
     parse_hex_32(value, "public key")
+}
+
+fn parse_hex_32(raw: &str, label: &str) -> Result<Seed> {
+    let bytes = hex::decode(raw.trim())
+        .with_context(|| format!("failed to decode {label} as hex"))?;
+    if bytes.len() != 32 {
+        anyhow::bail!("{label} must be exactly 32 bytes, got {}", bytes.len());
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&bytes);
+    Ok(seed)
 }

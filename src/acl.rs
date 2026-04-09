@@ -1,5 +1,5 @@
-use crate::crypto::{parse_hex_32, Seed};
 use anyhow::{anyhow, Context, Result};
+use morphvpn_protocol::handshake::Seed;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -48,18 +48,11 @@ impl AccessControlList {
     }
 
     pub fn authorize(&self, public_key: &Seed) -> Option<&AuthorizedClient> {
-        self.clients.get(public_key)
+        self.clients
+            .get(public_key)
+            .filter(|client| client.public_key == *public_key)
     }
 
-    pub fn from_clients(clients: impl IntoIterator<Item = AuthorizedClient>) -> Result<Self> {
-        let mut entries = HashMap::new();
-        for client in clients {
-            if entries.insert(client.public_key, client).is_some() {
-                return Err(anyhow!("duplicate ACL public key entry"));
-            }
-        }
-        Ok(Self { clients: entries })
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,6 +66,20 @@ struct AclClientEntry {
     name: String,
     public_key: String,
     inner_ip: String,
+}
+
+fn parse_hex_32(raw: &str, label: &str) -> Result<Seed> {
+    let bytes = hex::decode(raw.trim())
+        .with_context(|| format!("failed to decode {label} as hex"))?;
+    if bytes.len() != 32 {
+        return Err(anyhow!(
+            "{label} must be exactly 32 bytes, got {}",
+            bytes.len()
+        ));
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&bytes);
+    Ok(seed)
 }
 
 #[cfg(test)]
