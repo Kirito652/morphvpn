@@ -309,8 +309,55 @@ impl EstablishedSession {
             return Ok(None);
         }
 
-        let close = self.send_close(1)?;
-        Ok(Some(close))
+        let rekey_packet = self.send_control(
+            ControlFrame::RekeyInit {
+                epoch: self.tx_epoch.epoch,
+                public_key: self.tx_epoch.mask_key,
+            },
+            8,
+        )?;
+        Ok(Some(rekey_packet))
+    }
+
+    pub fn handle_rekey_init(&mut self, epoch: u32, _public_key: [u8; 32]) -> Result<Option<Bytes>> {
+        let (new_tx, new_rx) = derive_epoch_keys(
+            self._role,
+            epoch.wrapping_add(1),
+            &self._psk,
+            self._handshake_hash.as_ref(),
+        )?;
+
+        let resp = self.send_control(
+            ControlFrame::RekeyResp {
+                epoch: new_tx.epoch,
+                public_key: new_tx.mask_key,
+            },
+            8,
+        )?;
+
+        self.tx_epoch = new_tx;
+        self.rx_epoch = new_rx;
+        self.data_tx_nonce = 0;
+        self.control_tx_nonce = 0;
+        self.data_replay = ReplayWindow2048::default();
+        self.control_replay = ReplayWindow2048::default();
+        Ok(Some(resp))
+    }
+
+    pub fn handle_rekey_resp(&mut self, epoch: u32, _public_key: [u8; 32]) -> Result<()> {
+        let (new_tx, new_rx) = derive_epoch_keys(
+            self._role,
+            epoch,
+            &self._psk,
+            self._handshake_hash.as_ref(),
+        )?;
+        self.tx_epoch = new_tx;
+        self.rx_epoch = new_rx;
+        self.data_tx_nonce = 0;
+        self.control_tx_nonce = 0;
+        self.data_replay = ReplayWindow2048::default();
+        self.control_replay = ReplayWindow2048::default();
+        Ok(())
     }
 
     fn open_control(&mut self, nonce: u64, body: Bytes) -> Result<SessionEvent> {
@@ -487,4 +534,108 @@ fn encode_handshake_without_macs(frame: &HandshakeFrame) -> Vec<u8> {
     out.extend_from_slice(&frame.payload);
     out.extend_from_slice(&frame.padding);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handshake::{InitiatorCreated, ResponderCreated, StaticIdentity};
+
+    const TEST_PSK: Seed = [0x42; 32];
+
+    fn make_pair() -> (EstablishedSession, EstablishedSession) {
+        let client_id = StaticIdentity::generate();
+        let server_id = StaticIdentity::generate();
+
+        let initiator = InitiatorCreated::new(&client_id, &TEST_PSK, Some(server_id.public)).unwrap();
+        let responder = ResponderCreated::new(&server_id, &TEST_PSK).unwrap();
+
+        let (wait_resp, init) = initiator.send_init(b"init").unwrap();
+        let send_resp = responder.read_init(&init).unwrap();
+        let (wait_finish, resp) = send_resp.send_resp(b"resp").unwrap();
+        let send_finish = wait_resp.read_resp(&resp).unwrap();
+        let (client_est, finish) = send_finish.send_finish(b"finish").unwrap();
+        let server_est = wait_finish.read_finish(&finish).unwrap();
+
+        let client_tag = [0x01; 12];
+        let server_tag = [0x02; 12];
+        let client_session = EstablishedSession::new(
+            SessionRole::Client, client_tag,
+            "127.0.0.1:5000".parse().unwrap(),
+            TEST_PSK, client_est, None,
+        ).unwrap();
+        let server_session = EstablishedSession::new(
+            SessionRole::Server, server_tag,
+            "127.0.0.1:5001".parse().unwrap(),
+            TEST_PSK, server_est, None,
+        ).unwrap();
+        (client_session, server_session)
+    }
+
+    #[test]
+    fn rekey_sends_init_when_nonce_exhausted() {
+        let (mut session, _) = make_pair();
+        session.data_tx_nonce = u64::MAX - 100;
+        let result = session.advance_rekey().unwrap();
+        assert!(result.is_some());
+        let packet = result.unwrap();
+        assert!(!packet.is_empty());
+    }
+
+    #[test]
+    fn rekey_returns_none_when_nonce_safe() {
+        let (mut session, _) = make_pair();
+        session.data_tx_nonce = 1000;
+        let result = session.advance_rekey().unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn handle_rekey_init_responds_with_rekey_resp() {
+        let (mut client, mut server) = make_pair();
+
+        // Exhaust client nonce to trigger rekey
+        client.data_tx_nonce = u64::MAX - 100;
+        let rekey_init_packet = client.advance_rekey().unwrap().unwrap();
+
+        // Server receives and opens the rekey init
+        let event = server.open_inbound(rekey_init_packet).unwrap();
+        match event {
+            SessionEvent::Control(ControlFrame::RekeyInit { epoch, public_key }) => {
+                let resp = server.handle_rekey_init(epoch, public_key).unwrap();
+                assert!(resp.is_some());
+                let resp_packet = resp.unwrap();
+                assert!(!resp_packet.is_empty());
+            }
+            _ => panic!("expected RekeyInit"),
+        }
+    }
+
+    #[test]
+    fn handle_rekey_resp_completes_rekey_on_initiator() {
+        let (mut client, mut server) = make_pair();
+
+        // Client triggers rekey
+        client.data_tx_nonce = u64::MAX - 100;
+        let rekey_init_packet = client.advance_rekey().unwrap().unwrap();
+
+        // Server receives and responds
+        let event = server.open_inbound(rekey_init_packet).unwrap();
+        match event {
+            SessionEvent::Control(ControlFrame::RekeyInit { epoch, public_key }) => {
+                let resp_packet = server.handle_rekey_init(epoch, public_key).unwrap().unwrap();
+                // Client receives RekeyResp
+                let event2 = client.open_inbound(resp_packet).unwrap();
+                match event2 {
+                    SessionEvent::Control(ControlFrame::RekeyResp { epoch, public_key }) => {
+                        client.handle_rekey_resp(epoch, public_key).unwrap();
+                        assert_eq!(client.data_tx_nonce, 0);
+                        assert_eq!(client.control_tx_nonce, 0);
+                    }
+                    _ => panic!("expected RekeyResp"),
+                }
+            }
+            _ => panic!("expected RekeyInit"),
+        }
+    }
 }
