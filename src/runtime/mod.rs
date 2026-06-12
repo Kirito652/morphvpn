@@ -2,6 +2,7 @@ pub mod reactor;
 pub mod shard;
 
 use crate::acl::AccessControlList;
+use crate::config::ProfileParams;
 use anyhow::{anyhow, Context, Result};
 use morphvpn_protocol::handshake::{Seed, StaticIdentity};
 use reactor::{create_tun, ShardEvent, TunCommand, UdpOutbound};
@@ -17,7 +18,6 @@ const SHARD_CHANNEL_CAPACITY: usize = 1024;
 const EVENT_CHANNEL_CAPACITY: usize = 2048;
 const UDP_TX_CHANNEL_CAPACITY: usize = 2048;
 const TUN_COMMAND_CHANNEL_CAPACITY: usize = 2048;
-const DEFAULT_TUN_MTU: i32 = 1104;
 
 struct RuntimePlumbing {
     socket: Arc<UdpSocket>,
@@ -40,6 +40,7 @@ pub struct ServerRuntimeConfig {
     pub acl: AccessControlList,
     pub num_shards: usize,
     pub cookie_master_key: [u8; 32],
+    pub profile: ProfileParams,
 }
 
 #[derive(Clone)]
@@ -50,6 +51,7 @@ pub struct ClientRuntimeConfig {
     pub identity: StaticIdentity,
     pub server_public_key: Seed,
     pub requested_ip: Ipv4Addr,
+    pub profile: ProfileParams,
 }
 
 pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
@@ -59,7 +61,7 @@ pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
             .await
             .with_context(|| format!("failed to bind UDP socket on {}", config.bind))?,
     );
-    let tun = create_tun(&config.tun_name, DEFAULT_TUN_MTU)?;
+    let tun = create_tun(&config.tun_name, config.profile.mtu)?;
     info!(
         "server runtime ready: bind={}, tun={}, shards={}",
         config.bind, config.tun_name, num_shards
@@ -84,6 +86,7 @@ pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
                 psk: config.psk,
                 acl: config.acl.clone(),
                 cookie_master_key: config.cookie_master_key,
+                profile: config.profile.clone(),
             }),
         )?;
         joins.spawn(async move { worker.run().await });
@@ -113,7 +116,7 @@ pub async fn run_client(config: ClientRuntimeConfig) -> Result<()> {
             .await
             .context("failed to bind client UDP socket")?,
     );
-    let tun = create_tun(&config.tun_name, DEFAULT_TUN_MTU)?;
+    let tun = create_tun(&config.tun_name, config.profile.mtu)?;
     info!(
         "client runtime ready: server={}, tun={}",
         config.server_addr, config.tun_name
@@ -137,6 +140,7 @@ pub async fn run_client(config: ClientRuntimeConfig) -> Result<()> {
             server_addr: config.server_addr,
             server_public_key: config.server_public_key,
             requested_ip: config.requested_ip,
+            profile: config.profile,
         }),
     )?;
     joins.spawn(async move { worker.run().await });

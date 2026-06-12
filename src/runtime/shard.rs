@@ -1,4 +1,5 @@
 use crate::acl::AccessControlList;
+use crate::config::ProfileParams;
 use crate::runtime::reactor::{
     extract_routing_tag, parse_ipv4_destination, parse_ipv4_source, shard_for_tag, RouteUpdate,
     ShardEvent, ShardInbound, TunWrite, UdpOutbound,
@@ -20,13 +21,13 @@ use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use rand::Rng;
+
 const SHARD_TICK: Duration = Duration::from_secs(1);
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const COOKIE_ROTATION: Duration = Duration::from_secs(60);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const RATE_WINDOW: Duration = Duration::from_secs(1);
 const RATE_THRESHOLD: u32 = 8;
-const DATA_PADDING: usize = 8;
 
 pub enum ShardModeConfig {
     Server(ServerShardConfig),
@@ -39,6 +40,7 @@ pub struct ServerShardConfig {
     pub psk: Seed,
     pub acl: AccessControlList,
     pub cookie_master_key: [u8; 32],
+    pub profile: ProfileParams,
 }
 
 #[derive(Clone)]
@@ -48,6 +50,7 @@ pub struct ClientShardConfig {
     pub server_addr: SocketAddr,
     pub server_public_key: Seed,
     pub requested_ip: Ipv4Addr,
+    pub profile: ProfileParams,
 }
 
 pub struct ShardWorker {
@@ -57,6 +60,7 @@ pub struct ShardWorker {
     event_tx: mpsc::Sender<ShardEvent>,
     cookie_generator: StatelessCookieGenerator,
     mode: ShardMode,
+    profile: ProfileParams,
 }
 
 enum ShardMode {
@@ -68,6 +72,7 @@ struct ServerShardState {
     identity: StaticIdentity,
     psk: Seed,
     acl: AccessControlList,
+    profile: ProfileParams,
     pending_server: HashMap<RoutingTag, PendingServerEntry>,
     established: HashMap<RoutingTag, SessionSlot>,
     peer_routes: HashMap<Ipv4Addr, RoutingTag>,
@@ -107,22 +112,25 @@ impl ShardWorker {
         event_tx: mpsc::Sender<ShardEvent>,
         mode: ShardModeConfig,
     ) -> Result<Self> {
-        let (cookie_master_key, mode) = match mode {
+        let (cookie_master_key, profile, mode) = match mode {
             ShardModeConfig::Server(config) => {
                 let key = config.cookie_master_key;
+                let profile = config.profile.clone();
                 let mode = ShardMode::Server(Box::new(ServerShardState {
                     identity: config.identity,
                     psk: config.psk,
                     acl: config.acl,
+                    profile: config.profile,
                     pending_server: HashMap::new(),
                     established: HashMap::new(),
                     peer_routes: HashMap::new(),
                     rate_buckets: HashMap::new(),
                 }));
-                (key, mode)
+                (key, profile, mode)
             }
             ShardModeConfig::Client(config) => {
-                ([0u8; 32], ShardMode::Client(Box::new(ClientShardState {
+                let profile = config.profile.clone();
+                ([0u8; 32], profile, ShardMode::Client(Box::new(ClientShardState {
                     config,
                     pending_client: None,
                     established: None,
@@ -139,6 +147,7 @@ impl ShardWorker {
             event_tx,
             cookie_generator,
             mode,
+            profile,
         })
     }
 
@@ -202,7 +211,7 @@ impl ShardWorker {
 
                 let mut outbound = Vec::new();
                 for slot in state.established.values_mut() {
-                    if slot.last_keepalive.elapsed() >= KEEPALIVE_INTERVAL {
+                    if slot.last_keepalive.elapsed() >= Duration::from_secs(self.profile.keepalive_secs) {
                         if let Ok(packet) = slot.session.send_keepalive() {
                             outbound.push((slot.session.peer_addr(), packet));
                         }
@@ -236,7 +245,7 @@ impl ShardWorker {
                 }
 
                 if let Some(slot) = state.established.as_mut() {
-                    if slot.last_keepalive.elapsed() >= KEEPALIVE_INTERVAL {
+                    if slot.last_keepalive.elapsed() >= Duration::from_secs(self.profile.keepalive_secs) {
                         if let Ok(packet) = slot.session.send_keepalive() {
                             outbound.push((state.config.server_addr, packet));
                         }
@@ -308,6 +317,7 @@ impl ShardWorker {
     async fn handle_tun(&mut self, packet: Bytes, received_at: Instant) -> Result<()> {
         let event_tx = self.event_tx.clone();
         let shard_id = self.shard_id;
+        let padding_len = rand::rngs::OsRng.gen_range(self.profile.padding_range.0..=self.profile.padding_range.1);
         match &mut self.mode {
             ShardMode::Server(state) => {
                 let Some(destination) = parse_ipv4_destination(&packet) else {
@@ -320,7 +330,7 @@ impl ShardWorker {
                     state.peer_routes.remove(&destination);
                     return Ok(());
                 };
-                let outbound = slot.session.send_data(packet, DATA_PADDING)?;
+                let outbound = slot.session.send_data(packet, padding_len)?;
                 slot.last_activity = received_at;
                 Self::emit_udp(&event_tx, shard_id, slot.session.peer_addr(), outbound);
             }
@@ -328,7 +338,7 @@ impl ShardWorker {
                 let Some(slot) = state.established.as_mut() else {
                     return Ok(());
                 };
-                let outbound = slot.session.send_data(packet, DATA_PADDING)?;
+                let outbound = slot.session.send_data(packet, padding_len)?;
                 slot.last_activity = received_at;
                 Self::emit_udp(&event_tx, shard_id, state.config.server_addr, outbound);
             }
@@ -386,7 +396,7 @@ impl ShardWorker {
                             session,
                             last_activity: received_at,
                             last_keepalive: Instant::now(),
-                            pmtud: PmtudState::new(1400),
+                            pmtud: PmtudState::new(state.profile.mtu as u16),
                         },
                     );
                     return Ok(());
@@ -573,7 +583,7 @@ impl ShardWorker {
                         session,
                         last_activity: received_at,
                         last_keepalive: Instant::now(),
-                        pmtud: PmtudState::new(1400),
+                        pmtud: PmtudState::new(state.config.profile.mtu as u16),
                     });
                     state.bootstrap_pending = true;
                 }

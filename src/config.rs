@@ -70,6 +70,35 @@ fn default_gateway() -> String { "10.8.0.1".into() }
 fn default_rotation_secs() -> u64 { 60 }
 fn default_dns_server() -> String { "1.1.1.1".into() }
 
+#[derive(Debug, Clone)]
+pub struct ProfileParams {
+    pub padding_range: (usize, usize),
+    pub keepalive_secs: u64,
+    pub mtu: i32,
+}
+
+impl ProfileParams {
+    pub fn from_name(name: &str) -> Self {
+        match name.to_lowercase().as_str() {
+            "video" => Self {
+                padding_range: (0, 8),
+                keepalive_secs: 30,
+                mtu: 1400,
+            },
+            "gaming" => Self {
+                padding_range: (0, 4),
+                keepalive_secs: 10,
+                mtu: 1400,
+            },
+            "https" | _ => Self {
+                padding_range: (8, 32),
+                keepalive_secs: 15,
+                mtu: 1104,
+            },
+        }
+    }
+}
+
 impl MorphConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)

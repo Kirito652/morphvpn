@@ -58,8 +58,8 @@ struct ServerArgs {
     acl: PathBuf,
     #[arg(long, default_value = "tun0")]
     tun: String,
-    #[arg(long, value_enum, default_value = "https")]
-    profile: ProfileArg,
+    #[arg(long, value_enum)]
+    profile: Option<ProfileArg>,
     #[arg(long, default_value = "10.8.0.1")]
     tun_ip: String,
     #[arg(long, default_value_t = false)]
@@ -78,8 +78,8 @@ struct ClientArgs {
     server_public_key: String,
     #[arg(long, default_value = "tun1")]
     tun: String,
-    #[arg(long, value_enum, default_value = "https")]
-    profile: ProfileArg,
+    #[arg(long, value_enum)]
+    profile: Option<ProfileArg>,
     #[arg(long, default_value = "10.8.0.2")]
     tun_ip: String,
     #[arg(long, default_value = "10.8.0.1")]
@@ -112,16 +112,16 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let (server_cfg, client_cfg) = if let Some(config_path) = &cli.config {
+    let (server_cfg, client_cfg, config_profile) = if let Some(config_path) = &cli.config {
         let cfg = config::MorphConfig::load(config_path)?;
-        (cfg.server, cfg.client)
+        (cfg.server, cfg.client, cfg.profile)
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     match cli.command {
-        Commands::Server(args) => run_server(args, server_cfg).await?,
-        Commands::Client(args) => run_client(args, client_cfg).await?,
+        Commands::Server(args) => run_server(args, server_cfg, config_profile).await?,
+        Commands::Client(args) => run_client(args, client_cfg, config_profile).await?,
         Commands::Keygen(args) => run_keygen(args)?,
         Commands::Example => print_example(),
     }
@@ -129,7 +129,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>) -> Result<()> {
+async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_profile: Option<String>) -> Result<()> {
     let (psk, identity, acl, bind, tun_name, tun_ip, no_auto_net, cookie_master_key) = if let Some(cfg) = cfg {
         let psk = if let Some(ref psk_cfg) = cfg.psk {
             load_psk_from_config(psk_cfg)?
@@ -181,6 +181,12 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>) -> Resu
         None
     };
 
+    let profile_name = args.profile
+        .map(|p| format!("{:?}", p).to_lowercase())
+        .or(config_profile)
+        .unwrap_or_else(|| "https".into());
+    let profile_params = config::ProfileParams::from_name(&profile_name);
+
     tokio::select! {
         result = runtime::run_server(ServerRuntimeConfig {
             bind: bind_addr,
@@ -190,6 +196,7 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>) -> Resu
             acl,
             num_shards,
             cookie_master_key,
+            profile: profile_params,
         }) => {
             match result {
                 Ok(()) => Ok(()),
@@ -207,7 +214,7 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>) -> Resu
     }
 }
 
-async fn run_client(args: ClientArgs, cfg: Option<config::ClientConfig>) -> Result<()> {
+async fn run_client(args: ClientArgs, cfg: Option<config::ClientConfig>, config_profile: Option<String>) -> Result<()> {
     let (psk, identity, server_public_key, tun_name, tun_ip, gateway, server_addr, no_auto_net) = if let Some(cfg) = cfg {
         let psk = if let Some(ref psk_cfg) = cfg.psk {
             load_psk_from_config(psk_cfg)?
@@ -250,6 +257,12 @@ async fn run_client(args: ClientArgs, cfg: Option<config::ClientConfig>) -> Resu
         None
     };
 
+    let profile_name = args.profile
+        .map(|p| format!("{:?}", p).to_lowercase())
+        .or(config_profile)
+        .unwrap_or_else(|| "https".into());
+    let profile_params = config::ProfileParams::from_name(&profile_name);
+
     tokio::select! {
         result = runtime::run_client(ClientRuntimeConfig {
             server_addr,
@@ -258,6 +271,7 @@ async fn run_client(args: ClientArgs, cfg: Option<config::ClientConfig>) -> Resu
             identity,
             server_public_key,
             requested_ip,
+            profile: profile_params,
         }) => {
             match result {
                 Ok(()) => Ok(()),
