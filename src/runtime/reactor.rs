@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use bytes::{Bytes, BytesMut};
+use crate::metrics::PacketCounter;
 use morphvpn_protocol::wire::{RoutingTag, ROUTING_TAG_LEN};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -65,11 +66,13 @@ pub enum TunCommand {
 pub struct UdpReactor {
     socket: Arc<UdpSocket>,
     shard_senders: Vec<mpsc::Sender<ShardInbound>>,
+    metrics: Arc<PacketCounter>,
 }
 
 pub struct UdpTxAggregator {
     socket: Arc<UdpSocket>,
     rx: mpsc::Receiver<UdpOutbound>,
+    metrics: Arc<PacketCounter>,
 }
 
 pub struct TunWorker {
@@ -77,24 +80,33 @@ pub struct TunWorker {
     shard_senders: Vec<mpsc::Sender<ShardInbound>>,
     rx: mpsc::Receiver<TunCommand>,
     default_shard: usize,
+    metrics: Arc<PacketCounter>,
 }
 
 impl UdpReactor {
-    pub fn new(socket: Arc<UdpSocket>, shard_senders: Vec<mpsc::Sender<ShardInbound>>) -> Self {
+    pub fn new(socket: Arc<UdpSocket>, shard_senders: Vec<mpsc::Sender<ShardInbound>>, metrics: Arc<PacketCounter>) -> Self {
         Self {
             socket,
             shard_senders,
+            metrics,
         }
     }
 
     pub async fn run(self) -> Result<()> {
         let mut buffer = vec![0u8; UDP_BUFFER_CAPACITY];
         loop {
-            let (len, source) = self
+            let (len, source) = match self
                 .socket
                 .recv_from(&mut buffer)
                 .await
-                .context("failed to receive UDP datagram")?;
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    self.metrics.record_rx_error();
+                    return Err(e).context("failed to receive UDP datagram");
+                }
+            };
+            self.metrics.record_rx(len as u64);
             if len < ROUTING_TAG_LEN {
                 debug!("dropping short UDP datagram from {source}");
                 continue;
@@ -129,16 +141,22 @@ impl UdpReactor {
 }
 
 impl UdpTxAggregator {
-    pub fn new(socket: Arc<UdpSocket>, rx: mpsc::Receiver<UdpOutbound>) -> Self {
-        Self { socket, rx }
+    pub fn new(socket: Arc<UdpSocket>, rx: mpsc::Receiver<UdpOutbound>, metrics: Arc<PacketCounter>) -> Self {
+        Self { socket, rx, metrics }
     }
 
     pub async fn run(mut self) -> Result<()> {
         while let Some(outbound) = self.rx.recv().await {
-            self.socket
+            match self.socket
                 .send_to(&outbound.packet, outbound.target)
                 .await
-                .with_context(|| format!("failed to send UDP datagram to {}", outbound.target))?;
+            {
+                Ok(_) => self.metrics.record_tx(outbound.packet.len() as u64),
+                Err(e) => {
+                    self.metrics.record_tx_error();
+                    return Err(e).context(format!("failed to send UDP datagram to {}", outbound.target));
+                }
+            }
         }
         Ok(())
     }
@@ -150,12 +168,14 @@ impl TunWorker {
         shard_senders: Vec<mpsc::Sender<ShardInbound>>,
         rx: mpsc::Receiver<TunCommand>,
         default_shard: usize,
+        metrics: Arc<PacketCounter>,
     ) -> Self {
         Self {
             device,
             shard_senders,
             rx,
             default_shard,
+            metrics,
         }
     }
 
@@ -172,6 +192,7 @@ impl TunWorker {
                     if len == 0 {
                         continue;
                     }
+                    self.metrics.record_rx(len as u64);
 
                     let mut bytes = BytesMut::with_capacity(len);
                     bytes.extend_from_slice(&buffer[..len]);
@@ -207,6 +228,7 @@ impl TunWorker {
                                 .write_all(&write.packet)
                                 .await
                                 .context("failed to write packet to TUN device")?;
+                            self.metrics.record_tx(write.packet.len() as u64);
                         }
                         TunCommand::Route(RouteUpdate::Install { destination, shard_id }) => {
                             route_map.insert(destination, shard_id);

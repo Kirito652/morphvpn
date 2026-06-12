@@ -3,6 +3,7 @@ pub mod shard;
 
 use crate::acl::AccessControlList;
 use crate::config::ProfileParams;
+use crate::metrics::MetricsHandle;
 use anyhow::{anyhow, Context, Result};
 use morphvpn_protocol::handshake::{Seed, StaticIdentity};
 use reactor::{create_tun, ShardEvent, TunCommand, UdpOutbound};
@@ -29,6 +30,7 @@ struct RuntimePlumbing {
     tun_tx: mpsc::Sender<TunCommand>,
     tun_rx: mpsc::Receiver<TunCommand>,
     default_shard: usize,
+    metrics: MetricsHandle,
 }
 
 #[derive(Clone)]
@@ -56,6 +58,7 @@ pub struct ClientRuntimeConfig {
 
 pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
     let num_shards = config.num_shards.max(1);
+    let metrics = MetricsHandle::new();
     let socket = Arc::new(
         UdpSocket::bind(config.bind)
             .await
@@ -104,6 +107,7 @@ pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
             tun_tx,
             tun_rx,
             default_shard: 0,
+            metrics,
         },
     );
 
@@ -111,6 +115,7 @@ pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
 }
 
 pub async fn run_client(config: ClientRuntimeConfig) -> Result<()> {
+    let metrics = MetricsHandle::new();
     let socket = Arc::new(
         UdpSocket::bind("0.0.0.0:0")
             .await
@@ -157,6 +162,7 @@ pub async fn run_client(config: ClientRuntimeConfig) -> Result<()> {
             tun_tx,
             tun_rx,
             default_shard: 0,
+            metrics,
         },
     );
 
@@ -174,7 +180,12 @@ fn spawn_runtime_plumbing(joins: &mut JoinSet<Result<()>>, plumbing: RuntimePlum
         tun_tx,
         tun_rx,
         default_shard,
+        metrics,
     } = plumbing;
+
+    let udp_metrics = Arc::clone(&metrics.udp);
+    let udp_metrics_tx = Arc::clone(&metrics.udp);
+    let tun_metrics = Arc::clone(&metrics.tun);
 
     let reactor_socket = Arc::clone(&socket);
     let tx_socket = Arc::clone(&socket);
@@ -182,17 +193,17 @@ fn spawn_runtime_plumbing(joins: &mut JoinSet<Result<()>>, plumbing: RuntimePlum
     let tun_senders = shard_senders;
 
     joins.spawn(async move {
-        reactor::UdpReactor::new(reactor_socket, reactor_senders)
+        reactor::UdpReactor::new(reactor_socket, reactor_senders, udp_metrics)
             .run()
             .await
     });
     joins.spawn(async move {
-        reactor::UdpTxAggregator::new(tx_socket, udp_rx)
+        reactor::UdpTxAggregator::new(tx_socket, udp_rx, udp_metrics_tx)
             .run()
             .await
     });
     joins.spawn(async move {
-        reactor::TunWorker::new(tun, tun_senders, tun_rx, default_shard)
+        reactor::TunWorker::new(tun, tun_senders, tun_rx, default_shard, tun_metrics)
             .run()
             .await
     });
