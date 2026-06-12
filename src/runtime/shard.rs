@@ -469,12 +469,21 @@ impl ShardWorker {
                 ControlFrame::Close { .. } => {
                     Self::remove_server_session(event_tx, shard_id, state, routing_tag);
                 }
-                ControlFrame::KeepaliveAck
-                | ControlFrame::RekeyInit { .. }
-                | ControlFrame::RekeyResp { .. }
-                | ControlFrame::PmtudProbe { .. }
-                | ControlFrame::PmtudAck { .. }
-                | ControlFrame::BootstrapResp { .. } => {}
+                ControlFrame::RekeyInit { epoch, public_key } => {
+                    if let Some(slot) = state.established.get_mut(&routing_tag) {
+                        if let Some(resp) = slot.session.handle_rekey_init(epoch, public_key)? {
+                            Self::emit_udp(event_tx, shard_id, slot.session.peer_addr(), resp);
+                            info!("rekey completed on shard {}", shard_id);
+                        }
+                    }
+                }
+                ControlFrame::RekeyResp { epoch, public_key } => {
+                    if let Some(slot) = state.established.get_mut(&routing_tag) {
+                        slot.session.handle_rekey_resp(epoch, public_key)?;
+                        info!("rekey response processed on shard {}", shard_id);
+                    }
+                }
+                ControlFrame::KeepaliveAck | ControlFrame::PmtudProbe { .. } | ControlFrame::PmtudAck { .. } | ControlFrame::BootstrapResp { .. } => {}
             },
             SessionEvent::Data(payload) => {
                 if let Some(slot) = state.established.get(&routing_tag) {
@@ -554,12 +563,21 @@ impl ShardWorker {
                     state.established = None;
                     state.bootstrap_pending = false;
                 }
-                ControlFrame::KeepaliveAck
-                | ControlFrame::RekeyInit { .. }
-                | ControlFrame::RekeyResp { .. }
-                | ControlFrame::PmtudProbe { .. }
-                | ControlFrame::PmtudAck { .. }
-                | ControlFrame::BootstrapInit { .. } => {}
+                ControlFrame::RekeyInit { epoch, public_key } => {
+                    if let Some(slot) = state.established.as_mut() {
+                        if let Some(resp) = slot.session.handle_rekey_init(epoch, public_key)? {
+                            Self::emit_udp(event_tx, shard_id, state.config.server_addr, resp);
+                            info!("client rekey completed");
+                        }
+                    }
+                }
+                ControlFrame::RekeyResp { epoch, public_key } => {
+                    if let Some(slot) = state.established.as_mut() {
+                        slot.session.handle_rekey_resp(epoch, public_key)?;
+                        info!("client rekey response processed");
+                    }
+                }
+                ControlFrame::KeepaliveAck | ControlFrame::PmtudProbe { .. } | ControlFrame::PmtudAck { .. } | ControlFrame::BootstrapInit { .. } => {}
             },
             SessionEvent::Data(payload) => {
                 Self::emit_tun(event_tx, shard_id, payload);
