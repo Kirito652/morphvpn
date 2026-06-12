@@ -101,7 +101,12 @@ impl NetworkGuard {
 
         #[cfg(target_os = "windows")]
         if self.dns_server.is_some() {
-            let _ = windows_remove_dns_redirect(&self.config.tun_name);
+            windows_remove_dns_redirect(&self.config.tun_name);
+        }
+
+        #[cfg(target_os = "macos")]
+        if self.is_server {
+            macos_cleanup_nat(&self.config.tun_name);
         }
 
         info!("network cleanup completed");
@@ -146,7 +151,22 @@ pub fn setup_server(config: NetConfig) -> Result<NetworkGuard> {
         })
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_assign_ip(&config.tun_name, &config.tun_ip, config.prefix_len)?;
+        macos_link_up(&config.tun_name)?;
+        macos_enable_ip_forward()?;
+        macos_add_nat(&config.tun_name)?;
+        return Ok(NetworkGuard {
+            config,
+            pinned_server_ip: None,
+            is_server: true,
+            cleaned_up: false,
+            dns_server: None,
+        });
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         Ok(NetworkGuard {
             config,
@@ -194,7 +214,20 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
         })
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_assign_ip(&config.tun_name, &config.tun_ip, config.prefix_len)?;
+        macos_link_up(&config.tun_name)?;
+        return Ok(NetworkGuard {
+            pinned_server_ip: config.server_ip,
+            config,
+            is_server: false,
+            cleaned_up: false,
+            dns_server: None,
+        });
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         Ok(NetworkGuard {
             pinned_server_ip: config.server_ip,
@@ -223,7 +256,15 @@ pub fn reapply_server_tun(config: &NetConfig) -> Result<()> {
         Ok(())
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_assign_ip(&config.tun_name, &config.tun_ip, config.prefix_len)?;
+        macos_link_up(&config.tun_name)?;
+        macos_enable_ip_forward()?;
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let _ = config;
         Ok(())
@@ -258,7 +299,14 @@ pub fn reapply_client_tun(config: &NetConfig) -> Result<()> {
         Ok(())
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_assign_ip(&config.tun_name, &config.tun_ip, config.prefix_len)?;
+        macos_link_up(&config.tun_name)?;
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let _ = config;
         Ok(())
@@ -279,7 +327,7 @@ pub async fn update_tun_mtu(iface: &str, mtu: u32) -> Result<()> {
         windows_update_tun_mtu(iface, safe_mtu)
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let _ = iface;
         let _ = safe_mtu;
@@ -780,6 +828,65 @@ fn windows_remove_dns_redirect(tun_adapter: &str) {
         &["interface", "ip", "delete", "dns", tun_adapter, "all"],
     );
 }
+
+#[cfg(target_os = "macos")]
+fn macos_assign_ip(iface: &str, ip: &str, prefix_len: u8) -> Result<()> {
+    let _ = run_cmd(
+        "ifconfig",
+        &[iface, "inet", ip, ip, "netmask", &prefix_to_mask(prefix_len)],
+    )?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_link_up(iface: &str) -> Result<()> {
+    run_cmd("ifconfig", &[iface, "up"])
+        .with_context(|| format!("failed to bring up {iface}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_enable_ip_forward() -> Result<()> {
+    run_cmd("sysctl", &["-w", "net.inet.ip.forwarding=1"])
+        .context("failed to enable IP forwarding")?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_read_default_route() -> Result<Option<DefaultRoute>> {
+    let output = Command::new("route")
+        .args(["-n", "get", "default"])
+        .output()
+        .context("failed to run route -n get default")?;
+    if !output.status.success() {
+        return Err(anyhow!("route -n get default failed"));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut gateway = None;
+    let mut iface = None;
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if let Some(gw) = trimmed.strip_prefix("gateway:") {
+            gateway = Some(gw.trim().parse().context("invalid default gateway")?);
+        }
+        if let Some(iface_name) = trimmed.strip_prefix("interface:") {
+            iface = Some(iface_name.trim().to_string());
+        }
+    }
+    match (gateway, iface) {
+        (Some(g), Some(i)) => Ok(Some(DefaultRoute { gateway: g, iface: i })),
+        _ => Ok(None),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_add_nat(_tun_iface: &str) -> Result<()> {
+    macos_enable_ip_forward()?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_cleanup_nat(_tun_iface: &str) {}
 
 fn run_cmd(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
