@@ -1,6 +1,7 @@
 mod acl;
 mod config;
 mod identity;
+mod metrics;
 mod runtime;
 mod sys_net;
 
