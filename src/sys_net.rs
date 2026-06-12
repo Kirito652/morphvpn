@@ -19,6 +19,7 @@ pub struct NetConfig {
     pub prefix_len: u8,
     pub gateway_ip: String,
     pub server_ip: Option<IpAddr>,
+    pub dns_server: Option<String>,
 }
 
 impl NetConfig {
@@ -29,6 +30,7 @@ impl NetConfig {
             prefix_len: 24,
             gateway_ip: "10.8.0.2".into(),
             server_ip: None,
+            dns_server: None,
         }
     }
 
@@ -39,6 +41,7 @@ impl NetConfig {
             prefix_len: 24,
             gateway_ip: "10.8.0.1".into(),
             server_ip: None,
+            dns_server: None,
         }
     }
 }
@@ -56,6 +59,7 @@ pub struct NetworkGuard {
     pinned_server_ip: Option<IpAddr>,
     is_server: bool,
     cleaned_up: bool,
+    dns_server: Option<String>,
 }
 
 impl NetworkGuard {
@@ -80,6 +84,11 @@ impl NetworkGuard {
             }
         }
 
+        #[cfg(target_os = "linux")]
+        if let Some(ref dns_server) = self.dns_server {
+            linux_remove_dns_redirect(dns_server);
+        }
+
         #[cfg(target_os = "windows")]
         if self.is_server {
             let _ = windows_remove_tun_ip(&self.config.tun_name, &self.config.tun_ip);
@@ -88,6 +97,11 @@ impl NetworkGuard {
             if let Some(server_ip) = self.pinned_server_ip {
                 windows_remove_host_route(server_ip);
             }
+        }
+
+        #[cfg(target_os = "windows")]
+        if self.dns_server.is_some() {
+            let _ = windows_remove_dns_redirect(&self.config.tun_name);
         }
 
         info!("network cleanup completed");
@@ -115,6 +129,7 @@ pub fn setup_server(config: NetConfig) -> Result<NetworkGuard> {
             pinned_server_ip: None,
             is_server: true,
             cleaned_up: false,
+            dns_server: None,
         });
     }
 
@@ -127,6 +142,7 @@ pub fn setup_server(config: NetConfig) -> Result<NetworkGuard> {
             pinned_server_ip: None,
             is_server: true,
             cleaned_up: false,
+            dns_server: None,
         })
     }
 
@@ -137,6 +153,7 @@ pub fn setup_server(config: NetConfig) -> Result<NetworkGuard> {
             pinned_server_ip: None,
             is_server: true,
             cleaned_up: false,
+            dns_server: None,
         })
     }
 }
@@ -146,11 +163,16 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
     {
         reapply_client_tun(&config)?;
 
+        if let Some(ref dns_server) = config.dns_server {
+            linux_add_dns_redirect(dns_server)?;
+        }
+
         Ok(NetworkGuard {
             pinned_server_ip: config.server_ip,
-            config,
+            config: config.clone(),
             is_server: false,
             cleaned_up: false,
+            dns_server: config.dns_server,
         })
     }
 
@@ -158,11 +180,17 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
     {
         reapply_client_tun(&config)?;
 
+        if let Some(ref dns_server) = config.dns_server {
+            let adapter = windows_resolve_adapter_name(&config.tun_name)?;
+            windows_add_dns_redirect(&adapter, dns_server)?;
+        }
+
         Ok(NetworkGuard {
             pinned_server_ip: config.server_ip,
-            config,
+            config: config.clone(),
             is_server: false,
             cleaned_up: false,
+            dns_server: config.dns_server,
         })
     }
 
@@ -170,9 +198,10 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
     {
         Ok(NetworkGuard {
             pinned_server_ip: config.server_ip,
-            config,
+            config: config.clone(),
             is_server: false,
             cleaned_up: false,
+            dns_server: config.dns_server,
         })
     }
 }
@@ -699,6 +728,57 @@ fn host_route_target(ip: IpAddr) -> String {
         IpAddr::V4(addr) => format!("{addr}/32"),
         IpAddr::V6(addr) => format!("{addr}/128"),
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_add_dns_redirect(dns_server: &str) -> Result<()> {
+    let _ = run_cmd(
+        "iptables",
+        &[
+            "-t", "nat",
+            "-A", "OUTPUT",
+            "-p", "udp",
+            "--dport", "53",
+            "-j", "DNAT",
+            "--to-destination", &format!("{}:53", dns_server),
+        ],
+    )?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_remove_dns_redirect(dns_server: &str) {
+    let _ = run_cmd(
+        "iptables",
+        &[
+            "-t", "nat",
+            "-D", "OUTPUT",
+            "-p", "udp",
+            "--dport", "53",
+            "-j", "DNAT",
+            "--to-destination", &format!("{}:53", dns_server),
+        ],
+    );
+}
+
+#[cfg(target_os = "windows")]
+fn windows_add_dns_redirect(tun_adapter: &str, dns_server: &str) -> Result<()> {
+    run_cmd(
+        "netsh",
+        &[
+            "interface", "ip", "set", "dns",
+            tun_adapter, "static", dns_server,
+        ],
+    )?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_remove_dns_redirect(tun_adapter: &str) {
+    let _ = run_cmd(
+        "netsh",
+        &["interface", "ip", "delete", "dns", tun_adapter, "all"],
+    );
 }
 
 fn run_cmd(program: &str, args: &[&str]) -> Result<String> {

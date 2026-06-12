@@ -38,6 +38,7 @@ pub struct ClientConfig {
     pub psk: Option<PskConfig>,
     #[serde(default)]
     pub no_auto_net: bool,
+    pub dns: Option<DnsConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -54,11 +55,20 @@ pub struct CookieConfig {
     pub rotation_secs: u64,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct DnsConfig {
+    #[serde(default = "default_dns_server")]
+    pub server: String,
+    #[serde(default)]
+    pub prevent_leak: bool,
+}
+
 fn default_tun() -> String { "tun0".into() }
 fn default_tun_ip_server() -> String { "10.8.0.1".into() }
 fn default_tun_ip_client() -> String { "10.8.0.2".into() }
 fn default_gateway() -> String { "10.8.0.1".into() }
 fn default_rotation_secs() -> u64 { 60 }
+fn default_dns_server() -> String { "1.1.1.1".into() }
 
 impl MorphConfig {
     pub fn load(path: &Path) -> Result<Self> {

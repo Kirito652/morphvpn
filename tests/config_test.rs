@@ -51,3 +51,21 @@ master_key = "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344"
     let cookie = config.server.as_ref().unwrap().cookie.as_ref().unwrap();
     assert!(cookie.master_key.is_some());
 }
+
+#[test]
+fn parse_config_with_dns() {
+    let toml = r#"
+[client]
+server = "203.0.113.10:51820"
+private_key = "client.key"
+server_public_key = "server.pub"
+
+[client.dns]
+server = "8.8.8.8"
+prevent_leak = true
+"#;
+    let config: MorphConfig = toml::from_str(toml).unwrap();
+    let dns = config.client.as_ref().unwrap().dns.as_ref().unwrap();
+    assert_eq!(dns.server, "8.8.8.8");
+    assert!(dns.prevent_leak);
+}
