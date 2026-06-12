@@ -17,6 +17,8 @@ use morphvpn_protocol::pmtud::PmtudState;
 use morphvpn_protocol::wire::{decode_handshake_frame, ControlFrame, HandshakeKind, RoutingTag};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -41,6 +43,7 @@ pub struct ServerShardConfig {
     pub acl: AccessControlList,
     pub cookie_master_key: [u8; 32],
     pub profile: ProfileParams,
+    pub running: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -51,6 +54,7 @@ pub struct ClientShardConfig {
     pub server_public_key: Seed,
     pub requested_ip: Ipv4Addr,
     pub profile: ProfileParams,
+    pub running: Arc<AtomicBool>,
 }
 
 pub struct ShardWorker {
@@ -61,6 +65,7 @@ pub struct ShardWorker {
     cookie_generator: StatelessCookieGenerator,
     mode: ShardMode,
     profile: ProfileParams,
+    running: Arc<AtomicBool>,
 }
 
 enum ShardMode {
@@ -112,10 +117,11 @@ impl ShardWorker {
         event_tx: mpsc::Sender<ShardEvent>,
         mode: ShardModeConfig,
     ) -> Result<Self> {
-        let (cookie_master_key, profile, mode) = match mode {
+        let (cookie_master_key, profile, running, mode) = match mode {
             ShardModeConfig::Server(config) => {
                 let key = config.cookie_master_key;
                 let profile = config.profile.clone();
+                let running = config.running.clone();
                 let mode = ShardMode::Server(Box::new(ServerShardState {
                     identity: config.identity,
                     psk: config.psk,
@@ -126,11 +132,12 @@ impl ShardWorker {
                     peer_routes: HashMap::new(),
                     rate_buckets: HashMap::new(),
                 }));
-                (key, profile, mode)
+                (key, profile, running, mode)
             }
             ShardModeConfig::Client(config) => {
                 let profile = config.profile.clone();
-                ([0u8; 32], profile, ShardMode::Client(Box::new(ClientShardState {
+                let running = config.running.clone();
+                ([0u8; 32], profile, running, ShardMode::Client(Box::new(ClientShardState {
                     config,
                     pending_client: None,
                     established: None,
@@ -148,6 +155,7 @@ impl ShardWorker {
             cookie_generator,
             mode,
             profile,
+            running,
         })
     }
 
@@ -158,6 +166,10 @@ impl ShardWorker {
         loop {
             tokio::select! {
                 _ = tick.tick() => {
+                    if !self.running.load(Ordering::Relaxed) {
+                        info!("shard {} shutting down", self.shard_id);
+                        return Ok(());
+                    }
                     self.on_tick().await?;
                 }
                 inbound = self.inbound_rx.recv() => {

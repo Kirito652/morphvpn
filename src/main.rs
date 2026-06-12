@@ -17,6 +17,9 @@ use runtime::{ClientRuntimeConfig, ServerRuntimeConfig};
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use sys_net::NetConfig;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -188,6 +191,8 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_
         .unwrap_or_else(|| "https".into());
     let profile_params = config::ProfileParams::from_name(&profile_name);
 
+    let running = Arc::new(AtomicBool::new(true));
+
     tokio::select! {
         result = runtime::run_server(ServerRuntimeConfig {
             bind: bind_addr,
@@ -198,7 +203,9 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_
             num_shards,
             cookie_master_key,
             profile: profile_params,
+            running: running.clone(),
         }) => {
+            running.store(false, Ordering::Relaxed);
             match result {
                 Ok(()) => Ok(()),
                 Err(err) => {
@@ -208,6 +215,7 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_
             }
         }
         result = shutdown_signal() => {
+            running.store(false, Ordering::Relaxed);
             result?;
             info!("shutdown signal received");
             Ok(())
@@ -264,6 +272,8 @@ async fn run_client(args: ClientArgs, cfg: Option<config::ClientConfig>, config_
         .unwrap_or_else(|| "https".into());
     let profile_params = config::ProfileParams::from_name(&profile_name);
 
+    let running = Arc::new(AtomicBool::new(true));
+
     tokio::select! {
         result = runtime::run_client(ClientRuntimeConfig {
             server_addr,
@@ -273,7 +283,9 @@ async fn run_client(args: ClientArgs, cfg: Option<config::ClientConfig>, config_
             server_public_key,
             requested_ip,
             profile: profile_params,
+            running: running.clone(),
         }) => {
+            running.store(false, Ordering::Relaxed);
             match result {
                 Ok(()) => Ok(()),
                 Err(err) => {
@@ -283,6 +295,7 @@ async fn run_client(args: ClientArgs, cfg: Option<config::ClientConfig>, config_
             }
         }
         result = shutdown_signal() => {
+            running.store(false, Ordering::Relaxed);
             result?;
             info!("shutdown signal received");
             Ok(())
@@ -302,7 +315,6 @@ async fn shutdown_signal() -> Result<()> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-
         let mut sigint = signal(SignalKind::interrupt()).context("failed to bind SIGINT")?;
         let mut sigterm = signal(SignalKind::terminate()).context("failed to bind SIGTERM")?;
         tokio::select! {
@@ -318,6 +330,9 @@ async fn shutdown_signal() -> Result<()> {
             .context("failed to wait for Ctrl-C")?;
     }
 
+    info!("shutdown signal received, draining...");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    info!("drain complete, shutting down");
     Ok(())
 }
 

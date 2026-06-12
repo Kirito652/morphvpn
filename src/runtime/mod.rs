@@ -9,6 +9,7 @@ use morphvpn_protocol::handshake::{Seed, StaticIdentity};
 use reactor::{create_tun, ShardEvent, TunCommand, UdpOutbound};
 use shard::{ClientShardConfig, ServerShardConfig, ShardModeConfig, ShardWorker};
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -43,6 +44,7 @@ pub struct ServerRuntimeConfig {
     pub num_shards: usize,
     pub cookie_master_key: [u8; 32],
     pub profile: ProfileParams,
+    pub running: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -54,6 +56,7 @@ pub struct ClientRuntimeConfig {
     pub server_public_key: Seed,
     pub requested_ip: Ipv4Addr,
     pub profile: ProfileParams,
+    pub running: Arc<AtomicBool>,
 }
 
 pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
@@ -90,6 +93,7 @@ pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
                 acl: config.acl.clone(),
                 cookie_master_key: config.cookie_master_key,
                 profile: config.profile.clone(),
+                running: config.running.clone(),
             }),
         )?;
         joins.spawn(async move { worker.run().await });
@@ -146,6 +150,7 @@ pub async fn run_client(config: ClientRuntimeConfig) -> Result<()> {
             server_public_key: config.server_public_key,
             requested_ip: config.requested_ip,
             profile: config.profile,
+            running: config.running.clone(),
         }),
     )?;
     joins.spawn(async move { worker.run().await });
