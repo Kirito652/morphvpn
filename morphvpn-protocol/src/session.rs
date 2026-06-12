@@ -62,7 +62,7 @@ pub struct EstablishedSession {
     rx_epoch: EpochKeys,
     control_tx_nonce: u64,
     control_replay: ReplayWindow2048,
-    data_tx_nonce: u64,
+    pub data_tx_nonce: u64,
     data_replay: ReplayWindow2048,
     assigned_ip: Option<Ipv4Addr>,
     requested_ip: Option<Ipv4Addr>,

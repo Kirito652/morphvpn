@@ -126,3 +126,66 @@ fn bootstrap_init_resp_roundtrip() {
         other => panic!("expected Control event, got {:?}", other),
     }
 }
+
+#[test]
+fn rekey_rotates_keys_and_continues_communication() {
+    let (mut client, mut server) = common::establish_pair();
+
+    // Send some data before rekey
+    let payload1 = b"before rekey";
+    let encrypted1 = client
+        .send_data(bytes::Bytes::from_static(payload1), 8)
+        .unwrap();
+    let event = server.open_inbound(encrypted1).unwrap();
+    match event {
+        morphvpn_protocol::session::SessionEvent::Data(data) => {
+            assert_eq!(data.as_ref(), payload1);
+        }
+        other => panic!("expected Data, got {:?}", other),
+    }
+
+    // Force rekey by exhausting nonce
+    client.data_tx_nonce = u64::MAX - 100;
+    let rekey_init = client.advance_rekey().unwrap().unwrap();
+
+    // Server processes rekey init
+    let event = server.open_inbound(rekey_init).unwrap();
+    match event {
+        morphvpn_protocol::session::SessionEvent::Control(frame) => {
+            match frame {
+                morphvpn_protocol::wire::ControlFrame::RekeyInit { epoch, .. } => {
+                    let resp = server.handle_rekey_init(epoch, [0; 32]).unwrap().unwrap();
+                    // Client processes rekey response
+                    let event2 = client.open_inbound(resp).unwrap();
+                    match event2 {
+                        morphvpn_protocol::session::SessionEvent::Control(
+                            morphvpn_protocol::wire::ControlFrame::RekeyResp { epoch, .. },
+                        ) => {
+                            client.handle_rekey_resp(epoch, [0; 32]).unwrap();
+                        }
+                        other => panic!("expected RekeyResp, got {:?}", other),
+                    }
+                }
+                other => panic!("expected RekeyInit, got {:?}", other),
+            }
+        }
+        other => panic!("expected Control, got {:?}", other),
+    }
+
+    // Verify nonce counters reset
+    assert_eq!(client.data_tx_nonce, 0);
+    assert_eq!(server.data_tx_nonce, 0);
+
+    // Send data after rekey
+    let payload2 = b"after rekey";
+    let encrypted2 = client
+        .send_data(bytes::Bytes::from_static(payload2), 8)
+        .unwrap();
+    let event = server.open_inbound(encrypted2).unwrap();
+    match event {
+        morphvpn_protocol::session::SessionEvent::Data(data) => {
+            assert_eq!(data.as_ref(), payload2);
+        }
+        other => panic!("expected Data after rekey, got {:?}", other),
+    }
+}
