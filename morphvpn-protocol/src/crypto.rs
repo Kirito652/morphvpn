@@ -239,6 +239,16 @@ pub fn nonce_from_counter(base_nonce: &[u8; DATA_NONCE_LEN], counter: u64) -> [u
     nonce
 }
 
+pub fn derive_rekey_epoch_keys(
+    role: SessionRole,
+    current_epoch: u32,
+    psk: &Seed,
+    handshake_hash: &[u8],
+) -> Result<(EpochKeys, EpochKeys)> {
+    let next_epoch = current_epoch.wrapping_add(1);
+    derive_epoch_keys(role, next_epoch, psk, handshake_hash)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +294,17 @@ mod tests {
         let opened = open_transport_packet(packet, &tx).unwrap_or_else(|err| panic!("{err}"));
         assert_eq!(opened.header.packet_no, 9);
         assert_eq!(opened.body, Bytes::from_static(b"hello"));
+    }
+
+    #[test]
+    fn rekey_derives_different_keys() {
+        let (tx0, _) = derive_epoch_keys(SessionRole::Client, 0, &TEST_PSK, b"hash").unwrap();
+        let (tx1, _) = derive_epoch_keys(SessionRole::Client, 1, &TEST_PSK, b"hash").unwrap();
+        assert_ne!(tx0.data_key, tx1.data_key);
+        assert_ne!(tx0.outer_key, tx1.outer_key);
+        assert_ne!(tx0.mask_key, tx1.mask_key);
+        assert_ne!(tx0.base_nonce, tx1.base_nonce);
+        assert_eq!(tx0.epoch, 0);
+        assert_eq!(tx1.epoch, 1);
     }
 }
