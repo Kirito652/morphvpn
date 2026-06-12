@@ -278,6 +278,23 @@ impl EstablishedSession {
         self.send_control(ControlFrame::Close { reason }, 8)
     }
 
+    pub fn send_pmtud_probe(&mut self, probe_id: u16, target_size: u16) -> Result<Bytes> {
+        self.send_control(
+            ControlFrame::PmtudProbe { probe_id, target_size },
+            8,
+        )
+    }
+
+    pub fn handle_pmtud_probe(&mut self, probe_id: u16, target_size: u16) -> Result<Bytes> {
+        self.send_control(
+            ControlFrame::PmtudAck {
+                probe_id,
+                confirmed_size: target_size,
+            },
+            8,
+        )
+    }
+
     pub fn send_data(&mut self, payload: Bytes, padding_len: usize) -> Result<Bytes> {
         let packet_no = self.data_tx_nonce;
         self.data_tx_nonce = self.data_tx_nonce.wrapping_add(1);

@@ -12,6 +12,7 @@ use morphvpn_protocol::session::{
     verify_handshake_packet_mac1, verify_handshake_packet_mac2, EstablishedSession,
     PendingClientHandshake, PendingServerHandshake, SessionEvent,
 };
+use morphvpn_protocol::pmtud::PmtudState;
 use morphvpn_protocol::wire::{decode_handshake_frame, ControlFrame, HandshakeKind, RoutingTag};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -90,6 +91,7 @@ struct SessionSlot {
     session: EstablishedSession,
     last_activity: Instant,
     last_keepalive: Instant,
+    pmtud: PmtudState,
 }
 
 struct SourceRateState {
@@ -209,6 +211,13 @@ impl ShardWorker {
                     if let Some(packet) = slot.session.advance_rekey()? {
                         outbound.push((slot.session.peer_addr(), packet));
                     }
+                    if slot.pmtud.should_probe() {
+                        let (probe_id, probe_size) = slot.pmtud.create_probe();
+                        if let Ok(probe) = slot.session.send_pmtud_probe(probe_id, probe_size) {
+                            outbound.push((slot.session.peer_addr(), probe));
+                        }
+                    }
+                    slot.pmtud.check_timeout();
                 }
                 for (target, packet) in outbound {
                     Self::emit_udp(&event_tx, shard_id, target, packet);
@@ -236,6 +245,13 @@ impl ShardWorker {
                     if let Some(packet) = slot.session.advance_rekey()? {
                         outbound.push((state.config.server_addr, packet));
                     }
+                    if slot.pmtud.should_probe() {
+                        let (probe_id, probe_size) = slot.pmtud.create_probe();
+                        if let Ok(probe) = slot.session.send_pmtud_probe(probe_id, probe_size) {
+                            outbound.push((state.config.server_addr, probe));
+                        }
+                    }
+                    slot.pmtud.check_timeout();
                 } else if state.pending_client.is_none() {
                     needs_bootstrap = true;
                 }
@@ -370,6 +386,7 @@ impl ShardWorker {
                             session,
                             last_activity: received_at,
                             last_keepalive: Instant::now(),
+                            pmtud: PmtudState::new(1400),
                         },
                     );
                     return Ok(());
@@ -490,7 +507,19 @@ impl ShardWorker {
                         info!("rekey response processed on shard {}", shard_id);
                     }
                 }
-                ControlFrame::KeepaliveAck | ControlFrame::PmtudProbe { .. } | ControlFrame::PmtudAck { .. } | ControlFrame::BootstrapResp { .. } => {}
+                ControlFrame::KeepaliveAck | ControlFrame::BootstrapResp { .. } => {}
+                ControlFrame::PmtudProbe { probe_id, target_size } => {
+                    if let Some(slot) = state.established.get_mut(&routing_tag) {
+                        if let Ok(ack) = slot.session.handle_pmtud_probe(probe_id, target_size) {
+                            Self::emit_udp(event_tx, shard_id, slot.session.peer_addr(), ack);
+                        }
+                    }
+                }
+                ControlFrame::PmtudAck { probe_id, confirmed_size } => {
+                    if let Some(slot) = state.established.get_mut(&routing_tag) {
+                        slot.pmtud.handle_ack(probe_id, confirmed_size);
+                    }
+                }
             },
             SessionEvent::Data(payload) => {
                 if let Some(slot) = state.established.get(&routing_tag) {
@@ -544,6 +573,7 @@ impl ShardWorker {
                         session,
                         last_activity: received_at,
                         last_keepalive: Instant::now(),
+                        pmtud: PmtudState::new(1400),
                     });
                     state.bootstrap_pending = true;
                 }
@@ -584,7 +614,19 @@ impl ShardWorker {
                         info!("client rekey response processed");
                     }
                 }
-                ControlFrame::KeepaliveAck | ControlFrame::PmtudProbe { .. } | ControlFrame::PmtudAck { .. } | ControlFrame::BootstrapInit { .. } => {}
+                ControlFrame::KeepaliveAck | ControlFrame::BootstrapInit { .. } => {}
+                ControlFrame::PmtudProbe { probe_id, target_size } => {
+                    if let Some(slot) = state.established.as_mut() {
+                        if let Ok(ack) = slot.session.handle_pmtud_probe(probe_id, target_size) {
+                            Self::emit_udp(event_tx, shard_id, state.config.server_addr, ack);
+                        }
+                    }
+                }
+                ControlFrame::PmtudAck { probe_id, confirmed_size } => {
+                    if let Some(slot) = state.established.as_mut() {
+                        slot.pmtud.handle_ack(probe_id, confirmed_size);
+                    }
+                }
             },
             SessionEvent::Data(payload) => {
                 Self::emit_tun(event_tx, shard_id, payload);
