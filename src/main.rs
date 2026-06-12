@@ -24,6 +24,8 @@ use zeroize::Zeroize;
 #[derive(Parser)]
 #[command(name = "morphvpn", about = "MorphVPN v1 zero-legacy tunnel runtime")]
 struct Cli {
+    #[arg(long, short = 'c', env = "MORPHVPN_CONFIG")]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -109,9 +111,17 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    match Cli::parse().command {
-        Commands::Server(args) => run_server(args).await?,
-        Commands::Client(args) => run_client(args).await?,
+    let cli = Cli::parse();
+    let (server_cfg, client_cfg) = if let Some(config_path) = &cli.config {
+        let cfg = config::MorphConfig::load(config_path)?;
+        (cfg.server, cfg.client)
+    } else {
+        (None, None)
+    };
+
+    match cli.command {
+        Commands::Server(args) => run_server(args, server_cfg).await?,
+        Commands::Client(args) => run_client(args, client_cfg).await?,
         Commands::Keygen(args) => run_keygen(args)?,
         Commands::Example => print_example(),
     }
@@ -119,24 +129,40 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_server(args: ServerArgs) -> Result<()> {
-    let psk = load_psk(&args.psk)?;
-    let identity = read_private_key_file(&args.private_key)?;
-    let acl = AccessControlList::load(&args.acl)?;
+async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>) -> Result<()> {
+    let (psk, identity, acl, bind, tun_name, tun_ip, no_auto_net) = if let Some(cfg) = cfg {
+        let psk = if let Some(ref psk_cfg) = cfg.psk {
+            load_psk_from_config(psk_cfg)?
+        } else {
+            load_psk(&args.psk)?
+        };
+        let identity = read_private_key_file(&cfg.private_key)?;
+        let acl = AccessControlList::load(&cfg.acl)?;
+        (psk, identity, acl, cfg.bind, cfg.tun, cfg.tun_ip, cfg.no_auto_net)
+    } else {
+        let psk = load_psk(&args.psk)?;
+        let identity = read_private_key_file(&args.private_key)?;
+        let acl = AccessControlList::load(&args.acl)?;
+        (psk, identity, acl, args.bind.to_string(), args.tun.clone(), args.tun_ip.clone(), args.no_auto_net)
+    };
+
+    let bind_addr: SocketAddr = bind.parse()
+        .with_context(|| format!("invalid bind address '{bind}'"))?;
+
     let num_shards = std::thread::available_parallelism()
         .map(|parallelism| parallelism.get())
         .unwrap_or(1);
 
     info!(
-        "starting server on {}, tun={}, profile={:?}, shards={}",
-        args.bind, args.tun, args.profile, num_shards
+        "starting server on {}, tun={}, shards={}",
+        bind_addr, tun_name, num_shards
     );
 
-    let net_cfg = if args.no_auto_net {
+    let net_cfg = if no_auto_net {
         None
     } else {
-        let mut cfg = NetConfig::server(&args.tun);
-        cfg.tun_ip = args.tun_ip.clone();
+        let mut cfg = NetConfig::server(&tun_name);
+        cfg.tun_ip = tun_ip;
         Some(cfg)
     };
     let _network_guard = if let Some(cfg) = net_cfg {
@@ -147,8 +173,8 @@ async fn run_server(args: ServerArgs) -> Result<()> {
 
     tokio::select! {
         result = runtime::run_server(ServerRuntimeConfig {
-            bind: args.bind,
-            tun_name: args.tun,
+            bind: bind_addr,
+            tun_name,
             psk,
             identity,
             acl,
@@ -170,27 +196,41 @@ async fn run_server(args: ServerArgs) -> Result<()> {
     }
 }
 
-async fn run_client(args: ClientArgs) -> Result<()> {
-    let psk = load_psk(&args.psk)?;
-    let identity = read_private_key_file(&args.private_key)?;
-    let server_public_key = read_public_key_arg(&args.server_public_key)?;
-    let requested_ip: Ipv4Addr = args
-        .tun_ip
+async fn run_client(args: ClientArgs, cfg: Option<config::ClientConfig>) -> Result<()> {
+    let (psk, identity, server_public_key, tun_name, tun_ip, gateway, server_addr, no_auto_net) = if let Some(cfg) = cfg {
+        let psk = if let Some(ref psk_cfg) = cfg.psk {
+            load_psk_from_config(psk_cfg)?
+        } else {
+            load_psk(&args.psk)?
+        };
+        let identity = read_private_key_file(&cfg.private_key)?;
+        let server_public_key = read_public_key_arg(&cfg.server_public_key)?;
+        let server_addr: SocketAddr = cfg.server.parse()
+            .with_context(|| format!("invalid server address '{}'", cfg.server))?;
+        (psk, identity, server_public_key, cfg.tun, cfg.tun_ip, cfg.gateway, server_addr, cfg.no_auto_net)
+    } else {
+        let psk = load_psk(&args.psk)?;
+        let identity = read_private_key_file(&args.private_key)?;
+        let server_public_key = read_public_key_arg(&args.server_public_key)?;
+        (psk, identity, server_public_key, args.tun.clone(), args.tun_ip.clone(), args.gateway.clone(), args.server, args.no_auto_net)
+    };
+
+    let requested_ip: Ipv4Addr = tun_ip
         .parse()
-        .map_err(|err| anyhow!("invalid client tunnel IP '{}': {err}", args.tun_ip))?;
+        .map_err(|err| anyhow!("invalid client tunnel IP '{tun_ip}': {err}"))?;
 
     info!(
-        "starting client to {}, tun={}, profile={:?}",
-        args.server, args.tun, args.profile
+        "starting client to {}, tun={}",
+        server_addr, tun_name
     );
 
-    let net_cfg = if args.no_auto_net {
+    let net_cfg = if no_auto_net {
         None
     } else {
-        let mut cfg = NetConfig::client(&args.tun);
-        cfg.tun_ip = args.tun_ip.clone();
-        cfg.gateway_ip = args.gateway.clone();
-        cfg.server_ip = Some(args.server.ip());
+        let mut cfg = NetConfig::client(&tun_name);
+        cfg.tun_ip = tun_ip;
+        cfg.gateway_ip = gateway;
+        cfg.server_ip = Some(server_addr.ip());
         Some(cfg)
     };
     let _network_guard = if let Some(cfg) = net_cfg {
@@ -201,8 +241,8 @@ async fn run_client(args: ClientArgs) -> Result<()> {
 
     tokio::select! {
         result = runtime::run_client(ClientRuntimeConfig {
-            server_addr: args.server,
-            tun_name: args.tun,
+            server_addr,
+            tun_name,
             psk,
             identity,
             server_public_key,
@@ -278,6 +318,27 @@ fn load_psk_from_file(path: &Path) -> Result<Seed> {
     let parsed = parse_seed(&raw)?;
     raw.zeroize();
     Ok(parsed)
+}
+
+fn load_psk_from_config(psk_config: &config::PskConfig) -> Result<Seed> {
+    if let Some(path) = &psk_config.file {
+        return load_psk_from_file(path);
+    }
+    if let Some(env_name) = &psk_config.env {
+        let value = std::env::var(env_name)
+            .with_context(|| format!("env var '{env_name}' not set"))?;
+        let mut v = value.clone();
+        let parsed = parse_seed(&v)?;
+        v.zeroize();
+        return Ok(parsed);
+    }
+    if let Some(value) = &psk_config.value {
+        let mut v = value.clone();
+        let parsed = parse_seed(&v)?;
+        v.zeroize();
+        return Ok(parsed);
+    }
+    Err(anyhow!("PSK is required via file, env, or value in config"))
 }
 
 fn print_example() {
