@@ -69,3 +69,21 @@ impl MorphConfig {
         Ok(config)
     }
 }
+
+pub fn generate_cookie_key() -> [u8; 32] {
+    use rand::RngCore;
+    let mut key = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut key);
+    key
+}
+
+pub fn parse_cookie_key(hex_str: &str) -> Result<[u8; 32]> {
+    let bytes = hex::decode(hex_str.trim())
+        .context("failed to decode cookie master key as hex")?;
+    if bytes.len() != 32 {
+        anyhow::bail!("cookie master key must be exactly 32 bytes, got {}", bytes.len());
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes);
+    Ok(key)
+}

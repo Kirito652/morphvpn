@@ -39,6 +39,7 @@ pub struct ServerRuntimeConfig {
     pub identity: StaticIdentity,
     pub acl: AccessControlList,
     pub num_shards: usize,
+    pub cookie_master_key: [u8; 32],
 }
 
 #[derive(Clone)]
@@ -82,6 +83,7 @@ pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
                 identity: config.identity.clone(),
                 psk: config.psk,
                 acl: config.acl.clone(),
+                cookie_master_key: config.cookie_master_key,
             }),
         )?;
         joins.spawn(async move { worker.run().await });

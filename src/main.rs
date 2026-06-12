@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>) -> Result<()> {
-    let (psk, identity, acl, bind, tun_name, tun_ip, no_auto_net) = if let Some(cfg) = cfg {
+    let (psk, identity, acl, bind, tun_name, tun_ip, no_auto_net, cookie_master_key) = if let Some(cfg) = cfg {
         let psk = if let Some(ref psk_cfg) = cfg.psk {
             load_psk_from_config(psk_cfg)?
         } else {
@@ -138,12 +138,22 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>) -> Resu
         };
         let identity = read_private_key_file(&cfg.private_key)?;
         let acl = AccessControlList::load(&cfg.acl)?;
-        (psk, identity, acl, cfg.bind, cfg.tun, cfg.tun_ip, cfg.no_auto_net)
+        let cookie_master_key = if let Some(ref cookie_cfg) = cfg.cookie {
+            if let Some(ref hex_key) = cookie_cfg.master_key {
+                config::parse_cookie_key(hex_key)?
+            } else {
+                config::generate_cookie_key()
+            }
+        } else {
+            config::generate_cookie_key()
+        };
+        (psk, identity, acl, cfg.bind, cfg.tun, cfg.tun_ip, cfg.no_auto_net, cookie_master_key)
     } else {
         let psk = load_psk(&args.psk)?;
         let identity = read_private_key_file(&args.private_key)?;
         let acl = AccessControlList::load(&args.acl)?;
-        (psk, identity, acl, args.bind.to_string(), args.tun.clone(), args.tun_ip.clone(), args.no_auto_net)
+        let cookie_master_key = config::generate_cookie_key();
+        (psk, identity, acl, args.bind.to_string(), args.tun.clone(), args.tun_ip.clone(), args.no_auto_net, cookie_master_key)
     };
 
     let bind_addr: SocketAddr = bind.parse()
@@ -179,6 +189,7 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>) -> Resu
             identity,
             acl,
             num_shards,
+            cookie_master_key,
         }) => {
             match result {
                 Ok(()) => Ok(()),

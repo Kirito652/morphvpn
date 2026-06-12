@@ -37,6 +37,7 @@ pub struct ServerShardConfig {
     pub identity: StaticIdentity,
     pub psk: Seed,
     pub acl: AccessControlList,
+    pub cookie_master_key: [u8; 32],
 }
 
 #[derive(Clone)]
@@ -104,24 +105,30 @@ impl ShardWorker {
         event_tx: mpsc::Sender<ShardEvent>,
         mode: ShardModeConfig,
     ) -> Result<Self> {
-        let cookie_generator = StatelessCookieGenerator::new([0xA5; 32], COOKIE_ROTATION)?;
-        let mode = match mode {
-            ShardModeConfig::Server(config) => ShardMode::Server(Box::new(ServerShardState {
-                identity: config.identity,
-                psk: config.psk,
-                acl: config.acl,
-                pending_server: HashMap::new(),
-                established: HashMap::new(),
-                peer_routes: HashMap::new(),
-                rate_buckets: HashMap::new(),
-            })),
-            ShardModeConfig::Client(config) => ShardMode::Client(Box::new(ClientShardState {
-                config,
-                pending_client: None,
-                established: None,
-                bootstrap_pending: false,
-            })),
+        let (cookie_master_key, mode) = match mode {
+            ShardModeConfig::Server(config) => {
+                let key = config.cookie_master_key;
+                let mode = ShardMode::Server(Box::new(ServerShardState {
+                    identity: config.identity,
+                    psk: config.psk,
+                    acl: config.acl,
+                    pending_server: HashMap::new(),
+                    established: HashMap::new(),
+                    peer_routes: HashMap::new(),
+                    rate_buckets: HashMap::new(),
+                }));
+                (key, mode)
+            }
+            ShardModeConfig::Client(config) => {
+                ([0u8; 32], ShardMode::Client(Box::new(ClientShardState {
+                    config,
+                    pending_client: None,
+                    established: None,
+                    bootstrap_pending: false,
+                })))
+            }
         };
+        let cookie_generator = StatelessCookieGenerator::new(cookie_master_key, COOKIE_ROTATION)?;
 
         Ok(Self {
             shard_id,
