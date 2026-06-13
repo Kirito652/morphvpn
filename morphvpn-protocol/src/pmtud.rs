@@ -14,6 +14,7 @@ pub struct PmtudState {
 #[derive(Clone, Debug)]
 struct PendingProbe {
     probe_id: u16,
+    #[allow(dead_code)]
     probe_size: u16,
     sent_at: Instant,
 }
@@ -28,7 +29,7 @@ impl PmtudState {
         }
     }
 
-    pub fn current_mtu(&self) -> u16 {
+    pub fn confirmed_mtu(&self) -> u16 {
         self.confirmed_mtu
     }
 
@@ -77,7 +78,7 @@ mod tests {
     #[test]
     fn new_state_uses_initial_mtu() {
         let state = PmtudState::new(1400);
-        assert_eq!(state.current_mtu(), 1400);
+        assert_eq!(state.confirmed_mtu(), 1400);
         assert!(state.should_probe());
     }
 
@@ -95,7 +96,7 @@ mod tests {
         let mut state = PmtudState::new(1400);
         let (id, _) = state.create_probe();
         assert!(state.handle_ack(id, 1200));
-        assert_eq!(state.current_mtu(), 1200);
+        assert_eq!(state.confirmed_mtu(), 1200);
         assert!(state.should_probe());
     }
 
@@ -104,7 +105,7 @@ mod tests {
         let mut state = PmtudState::new(1400);
         let (id, _) = state.create_probe();
         assert!(!state.handle_ack(id + 1, 1200));
-        assert_eq!(state.current_mtu(), 1400);
+        assert_eq!(state.confirmed_mtu(), 1400);
     }
 
     #[test]

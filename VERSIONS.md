@@ -110,7 +110,7 @@
 
 ---
 
-## v0.1.0 (2026-06-13) — Initial Baseline
+## v0.1.0 (2026-04-09) — Initial Baseline
 
 **21 tests. 1 commit.**
 

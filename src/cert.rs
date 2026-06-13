@@ -63,8 +63,7 @@ fn pem_to_der(pem_str: &str) -> Result<Vec<u8>> {
     let stripped = pem_str
         .replace("-----BEGIN CERTIFICATE-----", "")
         .replace("-----END CERTIFICATE-----", "")
-        .replace('\n', "")
-        .replace('\r', "");
+        .replace(['\n', '\r'], "");
     use base64::Engine;
     let der = base64::engine::general_purpose::STANDARD
         .decode(stripped.trim())

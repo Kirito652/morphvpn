@@ -1,7 +1,9 @@
 /target
 **/*.rs.bk
 *.key
+*.pub
 *.pem
+*.psk
 *.p12
 *.der
 *.log
@@ -13,6 +15,9 @@ Thumbs.db
 # IDEs and editors
 .idea/
 .vscode/
+
+# Agent working files
+docs/compose/
 
 # Environment and local overrides
 .env

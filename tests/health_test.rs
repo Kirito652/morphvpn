@@ -7,13 +7,11 @@ async fn health_endpoint_returns_json() {
     let server = HealthServer::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = server.local_addr().unwrap();
 
-    let rx = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let tx = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let rx2 = rx.clone();
-    let tx2 = tx.clone();
+    let metrics = morphvpn::metrics::MetricsHandle::new();
+    let peer_manager = Arc::new(tokio::sync::RwLock::new(morphvpn::peer::PeerManager::new()));
 
     tokio::spawn(async move {
-        server.run(rx2, tx2).await.unwrap();
+        server.run(metrics, peer_manager).await.unwrap();
     });
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -28,6 +26,7 @@ async fn health_endpoint_returns_json() {
     assert!(body.contains("200 OK"));
     assert!(body.contains("\"status\":\"ok\""));
     assert!(body.contains("\"version\""));
+    assert!(body.contains("\"total_peers\""));
 }
 
 #[tokio::test]
@@ -35,11 +34,11 @@ async fn health_endpoint_shows_uptime() {
     let server = HealthServer::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = server.local_addr().unwrap();
 
-    let rx = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let tx = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let metrics = morphvpn::metrics::MetricsHandle::new();
+    let peer_manager = Arc::new(tokio::sync::RwLock::new(morphvpn::peer::PeerManager::new()));
 
     tokio::spawn(async move {
-        server.run(rx, tx).await.unwrap();
+        server.run(metrics, peer_manager).await.unwrap();
     });
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;

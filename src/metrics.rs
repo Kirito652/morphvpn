@@ -72,6 +72,12 @@ pub struct MetricsHandle {
     pub tun: Arc<PacketCounter>,
 }
 
+impl Default for MetricsHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetricsHandle {
     pub fn new() -> Self {
         Self {

@@ -56,6 +56,8 @@ pub struct NetworkGuard {
     config: NetConfig,
     #[cfg(target_os = "linux")]
     wan_iface: Option<String>,
+    #[cfg(target_os = "macos")]
+    macos_service_name: Option<String>,
     pinned_server_ip: Option<IpAddr>,
     is_server: bool,
     cleaned_up: bool,
@@ -80,7 +82,7 @@ impl NetworkGuard {
         }
 
         #[cfg(target_os = "macos")]
-        macos_unblock_ipv6(&self.config.tun_name);
+        macos_unblock_ipv6(&self.config.tun_name, self.macos_service_name.as_deref());
 
         #[cfg(target_os = "linux")]
         if self.is_server {
@@ -145,6 +147,8 @@ pub fn setup_server(config: NetConfig) -> Result<NetworkGuard> {
             config,
             #[cfg(target_os = "linux")]
             wan_iface: Some(wan),
+            #[cfg(target_os = "macos")]
+            macos_service_name: None,
             pinned_server_ip: None,
             is_server: true,
             cleaned_up: false,
@@ -159,6 +163,8 @@ pub fn setup_server(config: NetConfig) -> Result<NetworkGuard> {
         windows_block_ipv6(&adapter)?;
         Ok(NetworkGuard {
             config,
+            #[cfg(target_os = "macos")]
+            macos_service_name: None,
             pinned_server_ip: None,
             is_server: true,
             cleaned_up: false,
@@ -172,9 +178,12 @@ pub fn setup_server(config: NetConfig) -> Result<NetworkGuard> {
         macos_link_up(&config.tun_name)?;
         macos_enable_ip_forward()?;
         macos_add_nat(&config.tun_name)?;
-        macos_block_ipv6(&config.tun_name)?;
+        let service_name = macos_resolve_service_name(&config.tun_name)?;
+        macos_block_ipv6(&config.tun_name, service_name.as_deref())?;
         return Ok(NetworkGuard {
             config,
+            #[cfg(target_os = "macos")]
+            macos_service_name: service_name,
             pinned_server_ip: None,
             is_server: true,
             cleaned_up: false,
@@ -186,6 +195,8 @@ pub fn setup_server(config: NetConfig) -> Result<NetworkGuard> {
     {
         Ok(NetworkGuard {
             config,
+            #[cfg(target_os = "macos")]
+            macos_service_name: None,
             pinned_server_ip: None,
             is_server: true,
             cleaned_up: false,
@@ -207,6 +218,8 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
         Ok(NetworkGuard {
             pinned_server_ip: config.server_ip,
             config: config.clone(),
+            #[cfg(target_os = "macos")]
+            macos_service_name: None,
             is_server: false,
             cleaned_up: false,
             dns_server: config.dns_server,
@@ -226,6 +239,8 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
         Ok(NetworkGuard {
             pinned_server_ip: config.server_ip,
             config: config.clone(),
+            #[cfg(target_os = "macos")]
+            macos_service_name: None,
             is_server: false,
             cleaned_up: false,
             dns_server: config.dns_server,
@@ -236,10 +251,13 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
     {
         macos_assign_ip(&config.tun_name, &config.tun_ip, config.prefix_len)?;
         macos_link_up(&config.tun_name)?;
-        macos_block_ipv6(&config.tun_name)?;
+        let service_name = macos_resolve_service_name(&config.tun_name)?;
+        macos_block_ipv6(&config.tun_name, service_name.as_deref())?;
         return Ok(NetworkGuard {
             pinned_server_ip: config.server_ip,
             config,
+            #[cfg(target_os = "macos")]
+            macos_service_name: service_name,
             is_server: false,
             cleaned_up: false,
             dns_server: None,
@@ -251,6 +269,8 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
         Ok(NetworkGuard {
             pinned_server_ip: config.server_ip,
             config: config.clone(),
+            #[cfg(target_os = "macos")]
+            macos_service_name: None,
             is_server: false,
             cleaned_up: false,
             dns_server: config.dns_server,
@@ -944,13 +964,78 @@ fn windows_unblock_ipv6(adapter: &str) {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_block_ipv6(iface: &str) -> Result<()> {
+fn macos_resolve_service_name(iface: &str) -> Result<Option<String>> {
+    let output = Command::new("networksetup")
+        .args(["-listallnetworkservices"])
+        .output()
+        .context("failed to run 'networksetup -listallnetworkservices'")?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines().skip(1) {
+        let service = line.trim();
+        if service.is_empty() || service.starts_with('*') {
+            continue;
+        }
+        let info = Command::new("networksetup")
+            .args(["-getinfo", service])
+            .output();
+        if let Ok(info_output) = info {
+            let info_stdout = String::from_utf8_lossy(&info_output.stdout);
+            if let Some(device_line) = info_stdout.lines().find(|l| l.starts_with("Device:")) {
+                let device = device_line.split_whitespace().nth(1).unwrap_or("");
+                if device == iface {
+                    return Ok(Some(service.to_string()));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_block_ipv6(iface: &str, service_name: Option<&str>) -> Result<()> {
     let _ = run_cmd("ifconfig", &[iface, "inet6", "-autoconf"]);
+    let _ = run_cmd("ifconfig", &[iface, "inet6", "remove", "::1"]);
+
+    let output = Command::new("ifconfig")
+        .args([iface, "inet6"])
+        .output()
+        .context("failed to list IPv6 addresses")?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("inet6 ") && !trimmed.contains("fe80::") {
+                let addr = trimmed.split_whitespace().nth(1).unwrap_or("");
+                if !addr.is_empty() {
+                    let _ = run_cmd("ifconfig", &[iface, "inet6", "remove", addr]);
+                }
+            }
+        }
+    }
+
+    if let Some(service) = service_name {
+        let _ = run_cmd(
+            "networksetup",
+            &["-setv6off", service],
+        );
+    }
+
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn macos_unblock_ipv6(_iface: &str) {}
+fn macos_unblock_ipv6(iface: &str, service_name: Option<&str>) {
+    if let Some(service) = service_name {
+        let _ = run_cmd(
+            "networksetup",
+            &["-setv6automatic", service],
+        );
+    }
+    let _ = run_cmd("ifconfig", &[iface, "inet6", "+autoconf"]);
+}
 
 fn run_cmd(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
