@@ -4,6 +4,7 @@ mod config;
 mod health;
 mod identity;
 mod metrics;
+mod peer;
 mod runtime;
 mod sys_net;
 mod transport;
