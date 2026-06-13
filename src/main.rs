@@ -157,15 +157,15 @@ async fn main() -> Result<()> {
         }
     }
 
-    let (server_cfg, client_cfg, config_profile) = if let Some(config_path) = &cli.config {
+    let (server_cfg, client_cfg, config_profile, health_cfg) = if let Some(config_path) = &cli.config {
         let cfg = config::MorphConfig::load(config_path)?;
-        (cfg.server, cfg.client, cfg.profile)
+        (cfg.server, cfg.client, cfg.profile, cfg.health)
     } else {
-        (None, None, None)
+        (None, None, None, None)
     };
 
     match cli.command {
-        Commands::Server(args) => run_server(args, server_cfg, config_profile).await?,
+        Commands::Server(args) => run_server(args, server_cfg, config_profile, health_cfg).await?,
         Commands::Client(args) => run_client(args, client_cfg, config_profile).await?,
         Commands::Keygen(args) => run_keygen(args)?,
         Commands::Certgen(args) => run_certgen(args)?,
@@ -175,8 +175,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_profile: Option<String>) -> Result<()> {
-    let (psk, identity, acl, bind, tun_name, tun_ip, no_auto_net, cookie_master_key) = if let Some(cfg) = cfg {
+async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_profile: Option<String>, health_cfg: Option<config::HealthConfig>) -> Result<()> {
+    let (psk, identity, acl, bind, tun_name, tun_ip, no_auto_net, cookie_master_key, tcp_config) = if let Some(cfg) = cfg {
         let psk = if let Some(ref psk_cfg) = cfg.psk {
             load_psk_from_config(psk_cfg)?
         } else {
@@ -193,13 +193,13 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_
         } else {
             config::generate_cookie_key()
         };
-        (psk, identity, acl, cfg.bind, cfg.tun, cfg.tun_ip, cfg.no_auto_net, cookie_master_key)
+        (psk, identity, acl, cfg.bind, cfg.tun, cfg.tun_ip, cfg.no_auto_net, cookie_master_key, cfg.tcp)
     } else {
         let psk = load_psk(&args.psk)?;
         let identity = read_private_key_file(&args.private_key)?;
         let acl = AccessControlList::load(&args.acl)?;
         let cookie_master_key = config::generate_cookie_key();
-        (psk, identity, acl, args.bind.to_string(), args.tun.clone(), args.tun_ip.clone(), args.no_auto_net, cookie_master_key)
+        (psk, identity, acl, args.bind.to_string(), args.tun.clone(), args.tun_ip.clone(), args.no_auto_net, cookie_master_key, None)
     };
 
     let bind_addr: SocketAddr = bind.parse()
@@ -234,6 +234,44 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_
     let profile_params = config::ProfileParams::from_name(&profile_name);
 
     let running = Arc::new(AtomicBool::new(true));
+
+    if let Some(ref tcp_cfg) = tcp_config {
+        if tcp_cfg.enabled {
+            let tcp_addr: SocketAddr = format!("{}:{}", bind_addr.ip(), tcp_cfg.port).parse()
+                .with_context(|| "invalid TCP address")?;
+            let tcp_listener = transport::TcpServer::bind(tcp_addr).await?;
+            info!("TCP fallback listening on {}", tcp_listener.local_addr()?);
+            let running_clone = running.clone();
+            tokio::spawn(async move {
+                loop {
+                    if !running_clone.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    match tcp_listener.accept().await {
+                        Ok((stream, addr)) => {
+                            info!("TCP connection from {}", addr);
+                            drop(stream);
+                        }
+                        Err(e) => {
+                            tracing::error!("TCP accept error: {}", e);
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    if let Some(ref hc) = health_cfg {
+        let health_addr: SocketAddr = hc.bind.parse()
+            .with_context(|| "invalid health bind address")?;
+        let health_server = health::HealthServer::bind(health_addr).await?;
+        info!("health endpoint on {}", health_server.local_addr()?);
+        tokio::spawn(async move {
+            let rx = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let tx = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let _ = health_server.run(rx, tx).await;
+        });
+    }
 
     tokio::select! {
         result = runtime::run_server(ServerRuntimeConfig {

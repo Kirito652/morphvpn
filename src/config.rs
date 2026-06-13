@@ -8,6 +8,7 @@ pub struct MorphConfig {
     pub client: Option<ClientConfig>,
     pub profile: Option<String>,
     pub log: Option<LogConfig>,
+    pub health: Option<HealthConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -106,6 +107,14 @@ fn default_keepalive_interval() -> u64 { 15 }
 fn default_keepalive_timeout() -> u64 { 45 }
 fn default_log_format() -> String { "pretty".into() }
 fn default_log_level() -> String { "morphvpn=info".into() }
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct HealthConfig {
+    #[serde(default = "default_health_bind")]
+    pub bind: String,
+}
+
+fn default_health_bind() -> String { "127.0.0.1:8080".into() }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct TcpConfig {
