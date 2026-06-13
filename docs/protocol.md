@@ -32,7 +32,7 @@ All packets begin with a 12-byte **Routing Tag** used for shard routing.
 
 ### 2.2 Handshake Frame
 
-```
+````
  0                   1                   2                   3
  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -56,7 +56,7 @@ All packets begin with a 12-byte **Routing Tag** used for shard routing.
 
 ### 2.3 Transport Envelope
 
-```
+````
  0                   1                   2                   3
  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
