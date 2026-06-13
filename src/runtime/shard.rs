@@ -402,6 +402,7 @@ impl ShardWorker {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_server_udp_with(
         shard_id: usize,
         event_tx: &mpsc::Sender<ShardEvent>,
@@ -621,6 +622,7 @@ impl ShardWorker {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_client_udp_with(
         shard_id: usize,
         _num_shards: usize,
