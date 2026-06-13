@@ -11,6 +11,7 @@ use shard::{ClientShardConfig, ServerShardConfig, ShardModeConfig, ShardWorker};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -93,6 +94,8 @@ pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
                 acl: config.acl.clone(),
                 cookie_master_key: config.cookie_master_key,
                 profile: config.profile.clone(),
+                keepalive_interval: Duration::from_secs(config.profile.keepalive_secs),
+                keepalive_timeout: Duration::from_secs(config.profile.keepalive_secs * 3),
                 running: config.running.clone(),
             }),
         )?;
@@ -138,6 +141,7 @@ pub async fn run_client(config: ClientRuntimeConfig) -> Result<()> {
     let shard_senders = vec![inbound_tx];
     let mut joins = JoinSet::new();
 
+    let ka_secs = config.profile.keepalive_secs;
     let worker = ShardWorker::new(
         0,
         1,
@@ -150,6 +154,8 @@ pub async fn run_client(config: ClientRuntimeConfig) -> Result<()> {
             server_public_key: config.server_public_key,
             requested_ip: config.requested_ip,
             profile: config.profile,
+            keepalive_interval: Duration::from_secs(ka_secs),
+            keepalive_timeout: Duration::from_secs(ka_secs * 3),
             running: config.running.clone(),
         }),
     )?;

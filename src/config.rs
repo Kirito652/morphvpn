@@ -23,6 +23,7 @@ pub struct ServerConfig {
     #[serde(default)]
     pub no_auto_net: bool,
     pub cert: Option<CertConfig>,
+    pub keepalive: Option<KeepaliveConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -41,6 +42,7 @@ pub struct ClientConfig {
     pub no_auto_net: bool,
     pub dns: Option<DnsConfig>,
     pub cert: Option<CertConfig>,
+    pub keepalive: Option<KeepaliveConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -80,6 +82,17 @@ pub struct CertConfig {
 fn default_verify_peer() -> bool { true }
 fn default_rotation_secs() -> u64 { 60 }
 fn default_dns_server() -> String { "1.1.1.1".into() }
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct KeepaliveConfig {
+    #[serde(default = "default_keepalive_interval")]
+    pub interval_secs: u64,
+    #[serde(default = "default_keepalive_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_keepalive_interval() -> u64 { 15 }
+fn default_keepalive_timeout() -> u64 { 45 }
 
 #[derive(Debug, Clone)]
 pub struct ProfileParams {

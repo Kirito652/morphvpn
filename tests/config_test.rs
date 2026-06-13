@@ -88,3 +88,21 @@ verify_peer = true
     assert!(cert.verify_peer);
     assert_eq!(cert.cert.to_str().unwrap(), "server.pem");
 }
+
+#[test]
+fn parse_config_with_keepalive() {
+    let toml = r#"
+[client]
+server = "203.0.113.10:51820"
+private_key = "client.key"
+server_public_key = "server.pub"
+
+[client.keepalive]
+interval_secs = 10
+timeout_secs = 30
+"#;
+    let config: MorphConfig = toml::from_str(toml).unwrap();
+    let ka = config.client.as_ref().unwrap().keepalive.as_ref().unwrap();
+    assert_eq!(ka.interval_secs, 10);
+    assert_eq!(ka.timeout_secs, 30);
+}

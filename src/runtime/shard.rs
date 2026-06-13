@@ -43,6 +43,8 @@ pub struct ServerShardConfig {
     pub acl: AccessControlList,
     pub cookie_master_key: [u8; 32],
     pub profile: ProfileParams,
+    pub keepalive_interval: Duration,
+    pub keepalive_timeout: Duration,
     pub running: Arc<AtomicBool>,
 }
 
@@ -54,6 +56,8 @@ pub struct ClientShardConfig {
     pub server_public_key: Seed,
     pub requested_ip: Ipv4Addr,
     pub profile: ProfileParams,
+    pub keepalive_interval: Duration,
+    pub keepalive_timeout: Duration,
     pub running: Arc<AtomicBool>,
 }
 
@@ -78,6 +82,8 @@ struct ServerShardState {
     psk: Seed,
     acl: AccessControlList,
     profile: ProfileParams,
+    keepalive_interval: Duration,
+    keepalive_timeout: Duration,
     pending_server: HashMap<RoutingTag, PendingServerEntry>,
     established: HashMap<RoutingTag, SessionSlot>,
     peer_routes: HashMap<Ipv4Addr, RoutingTag>,
@@ -89,6 +95,8 @@ struct ClientShardState {
     pending_client: Option<PendingClientHandshake>,
     established: Option<SessionSlot>,
     bootstrap_pending: bool,
+    keepalive_interval: Duration,
+    keepalive_timeout: Duration,
 }
 
 struct PendingServerEntry {
@@ -127,6 +135,8 @@ impl ShardWorker {
                     psk: config.psk,
                     acl: config.acl,
                     profile: config.profile,
+                    keepalive_interval: config.keepalive_interval,
+                    keepalive_timeout: config.keepalive_timeout,
                     pending_server: HashMap::new(),
                     established: HashMap::new(),
                     peer_routes: HashMap::new(),
@@ -137,11 +147,15 @@ impl ShardWorker {
             ShardModeConfig::Client(config) => {
                 let profile = config.profile.clone();
                 let running = config.running.clone();
+                let keepalive_interval = config.keepalive_interval;
+                let keepalive_timeout = config.keepalive_timeout;
                 ([0u8; 32], profile, running, ShardMode::Client(Box::new(ClientShardState {
                     config,
                     pending_client: None,
                     established: None,
                     bootstrap_pending: false,
+                    keepalive_interval,
+                    keepalive_timeout,
                 })))
             }
         };
@@ -223,7 +237,7 @@ impl ShardWorker {
 
                 let mut outbound = Vec::new();
                 for slot in state.established.values_mut() {
-                    if slot.last_keepalive.elapsed() >= Duration::from_secs(self.profile.keepalive_secs) {
+                    if slot.last_keepalive.elapsed() >= state.keepalive_interval {
                         if let Ok(packet) = slot.session.send_keepalive() {
                             outbound.push((slot.session.peer_addr(), packet));
                         }
@@ -243,6 +257,18 @@ impl ShardWorker {
                 for (target, packet) in outbound {
                     Self::emit_udp(&event_tx, shard_id, target, packet);
                 }
+
+                let now = Instant::now();
+                let timeout = state.keepalive_timeout;
+                let dead_peers: Vec<RoutingTag> = state.established.iter()
+                    .filter(|(_, slot)| now.duration_since(slot.last_activity) > timeout)
+                    .map(|(tag, _)| *tag)
+                    .collect();
+
+                for tag in dead_peers {
+                    info!("removing dead peer on shard {}", shard_id);
+                    Self::remove_server_session(&event_tx, shard_id, state, tag);
+                }
             }
             ShardMode::Client(state) => {
                 let mut outbound = Vec::new();
@@ -257,7 +283,7 @@ impl ShardWorker {
                 }
 
                 if let Some(slot) = state.established.as_mut() {
-                    if slot.last_keepalive.elapsed() >= Duration::from_secs(self.profile.keepalive_secs) {
+                    if slot.last_keepalive.elapsed() >= state.keepalive_interval {
                         if let Ok(packet) = slot.session.send_keepalive() {
                             outbound.push((state.config.server_addr, packet));
                         }
@@ -275,6 +301,14 @@ impl ShardWorker {
                     slot.pmtud.check_timeout();
                 } else if state.pending_client.is_none() {
                     needs_bootstrap = true;
+                }
+
+                if let Some(ref slot) = state.established {
+                    if slot.last_activity.elapsed() > state.keepalive_timeout {
+                        warn!("server appears dead, reconnecting");
+                        state.established = None;
+                        state.bootstrap_pending = false;
+                    }
                 }
 
                 for (target, packet) in outbound {
@@ -530,6 +564,7 @@ impl ShardWorker {
                     }
                 }
                 ControlFrame::KeepaliveAck | ControlFrame::BootstrapResp { .. } => {}
+                ControlFrame::AuthInit { .. } | ControlFrame::AuthResp { .. } => {}
                 ControlFrame::PmtudProbe { probe_id, target_size } => {
                     if let Some(slot) = state.established.get_mut(&routing_tag) {
                         if let Ok(ack) = slot.session.handle_pmtud_probe(probe_id, target_size) {
@@ -637,6 +672,7 @@ impl ShardWorker {
                     }
                 }
                 ControlFrame::KeepaliveAck | ControlFrame::BootstrapInit { .. } => {}
+                ControlFrame::AuthInit { .. } | ControlFrame::AuthResp { .. } => {}
                 ControlFrame::PmtudProbe { probe_id, target_size } => {
                     if let Some(slot) = state.established.as_mut() {
                         if let Ok(ack) = slot.session.handle_pmtud_probe(probe_id, target_size) {
