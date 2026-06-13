@@ -5,6 +5,7 @@ mod identity;
 mod metrics;
 mod runtime;
 mod sys_net;
+mod transport;
 
 use acl::AccessControlList;
 use anyhow::{anyhow, Context, Result};
