@@ -4,9 +4,9 @@ resolver = "2"
 
 [package]
 name = "morphvpn"
-version = "0.1.0"
+version = "0.8.0"
 edition = "2021"
-description = "Experimental beta VPN tunnel prototype written by a self-taught developer."
+description = "High-performance stealth VPN tunnel with Noise protocol, dual-layer encryption, and cross-platform support."
 license = "MIT"
 readme = "README.md"
 
