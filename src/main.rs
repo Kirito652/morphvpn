@@ -6,6 +6,7 @@ mod identity;
 mod metrics;
 mod peer;
 mod runtime;
+mod setup;
 mod sys_net;
 mod transport;
 
@@ -45,6 +46,7 @@ enum Commands {
     Keygen(KeygenArgs),
     Certgen(CertgenArgs),
     Example,
+    Setup,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -171,6 +173,7 @@ async fn main() -> Result<()> {
         Commands::Keygen(args) => run_keygen(args)?,
         Commands::Certgen(args) => run_certgen(args)?,
         Commands::Example => print_example(),
+        Commands::Setup => setup::run_setup()?,
     }
 
     Ok(())
