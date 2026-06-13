@@ -25,6 +25,7 @@ pub struct ServerConfig {
     pub no_auto_net: bool,
     pub cert: Option<CertConfig>,
     pub keepalive: Option<KeepaliveConfig>,
+    pub tcp: Option<TcpConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -44,6 +45,7 @@ pub struct ClientConfig {
     pub dns: Option<DnsConfig>,
     pub cert: Option<CertConfig>,
     pub keepalive: Option<KeepaliveConfig>,
+    pub tcp: Option<TcpConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -104,6 +106,19 @@ fn default_keepalive_interval() -> u64 { 15 }
 fn default_keepalive_timeout() -> u64 { 45 }
 fn default_log_format() -> String { "pretty".into() }
 fn default_log_level() -> String { "morphvpn=info".into() }
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct TcpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_tcp_port")]
+    pub port: u16,
+    #[serde(default = "default_tcp_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_tcp_port() -> u16 { 51821 }
+fn default_tcp_timeout() -> u64 { 30 }
 
 #[derive(Debug, Clone)]
 pub struct ProfileParams {

@@ -119,3 +119,23 @@ level = "debug"
     assert_eq!(log.format, "json");
     assert_eq!(log.level, "debug");
 }
+
+#[test]
+fn parse_config_with_tcp() {
+    let toml = r#"
+[server]
+bind = "0.0.0.0:51820"
+private_key = "server.key"
+acl = "acl.toml"
+
+[server.tcp]
+enabled = true
+port = 51821
+timeout_secs = 30
+"#;
+    let config: MorphConfig = toml::from_str(toml).unwrap();
+    let tcp = config.server.as_ref().unwrap().tcp.as_ref().unwrap();
+    assert!(tcp.enabled);
+    assert_eq!(tcp.port, 51821);
+    assert_eq!(tcp.timeout_secs, 30);
+}
