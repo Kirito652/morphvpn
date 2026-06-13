@@ -1,0 +1,12 @@
+# MorphVPN ACL Configuration
+# List of authorized clients
+
+[[clients]]
+name = "client1"
+public_key = "CLIENT1_PUBLIC_KEY_64_HEX_CHARS"
+inner_ip = "10.8.0.5"
+
+[[clients]]
+name = "client2"
+public_key = "CLIENT2_PUBLIC_KEY_64_HEX_CHARS"
+inner_ip = "10.8.0.6"

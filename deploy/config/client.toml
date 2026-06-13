@@ -1,0 +1,28 @@
+# MorphVPN Client Configuration
+# Copy to /etc/morphvpn/client.toml and customize
+
+[client]
+server = "YOUR_SERVER_IP:51820"
+private_key = "/etc/morphvpn/client.key"
+server_public_key = "SERVER_PUBLIC_KEY_HEX"
+tun = "tun1"
+tun_ip = "10.8.0.5"
+gateway = "10.8.0.1"
+
+[client.psk]
+file = "/etc/morphvpn/client.psk"
+
+[client.tcp]
+enabled = true
+
+[client.keepalive]
+interval_secs = 15
+timeout_secs = 45
+
+[client.dns]
+server = "1.1.1.1"
+prevent_leak = true
+
+[log]
+format = "pretty"
+level = "morphvpn=info"

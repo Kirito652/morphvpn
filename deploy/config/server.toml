@@ -1,0 +1,33 @@
+# MorphVPN Server Configuration
+# Copy to /etc/morphvpn/server.toml and customize
+
+[server]
+bind = "0.0.0.0:51820"
+private_key = "/etc/morphvpn/server.key"
+acl = "/etc/morphvpn/acl.toml"
+tun = "tun0"
+tun_ip = "10.8.0.1"
+
+[server.psk]
+file = "/etc/morphvpn/server.psk"
+
+[server.cookie]
+# Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
+master_key = "REPLACE_WITH_RANDOM_64_HEX_CHARS"
+rotation_secs = 60
+
+[server.tcp]
+enabled = true
+port = 51821
+
+[server.keepalive]
+interval_secs = 15
+timeout_secs = 45
+
+[server.dns]
+server = "1.1.1.1"
+prevent_leak = true
+
+[log]
+format = "pretty"
+level = "morphvpn=info"
