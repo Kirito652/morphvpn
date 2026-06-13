@@ -1,6 +1,7 @@
 mod acl;
 mod cert;
 mod config;
+mod health;
 mod identity;
 mod metrics;
 mod runtime;
