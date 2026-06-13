@@ -66,6 +66,7 @@ pub struct EstablishedSession {
     data_replay: ReplayWindow2048,
     assigned_ip: Option<Ipv4Addr>,
     requested_ip: Option<Ipv4Addr>,
+    remote_cert_fingerprint: Option<[u8; 32]>,
 }
 
 impl PendingClientHandshake {
@@ -223,6 +224,7 @@ impl EstablishedSession {
             data_replay: ReplayWindow2048::default(),
             assigned_ip: None,
             requested_ip,
+            remote_cert_fingerprint: None,
         })
     }
 
@@ -256,6 +258,14 @@ impl EstablishedSession {
 
     pub fn current_routing_tag(&self) -> RoutingTag {
         self.routing_tag
+    }
+
+    pub fn remote_cert_fingerprint(&self) -> Option<[u8; 32]> {
+        self.remote_cert_fingerprint
+    }
+
+    pub fn set_remote_cert_fingerprint(&mut self, fp: [u8; 32]) {
+        self.remote_cert_fingerprint = Some(fp);
     }
 
     pub fn send_bootstrap_init(&mut self, requested_ip: Ipv4Addr) -> Result<Bytes> {
@@ -293,6 +303,14 @@ impl EstablishedSession {
             },
             8,
         )
+    }
+
+    pub fn send_auth_init(&mut self, cert_fingerprint: [u8; 32]) -> Result<Bytes> {
+        self.send_control(ControlFrame::AuthInit { cert_fingerprint }, 8)
+    }
+
+    pub fn send_auth_resp(&mut self, cert_fingerprint: [u8; 32]) -> Result<Bytes> {
+        self.send_control(ControlFrame::AuthResp { cert_fingerprint }, 8)
     }
 
     pub fn send_data(&mut self, payload: Bytes, padding_len: usize) -> Result<Bytes> {
@@ -653,6 +671,31 @@ mod tests {
                 }
             }
             _ => panic!("expected RekeyInit"),
+        }
+    }
+
+    #[test]
+    fn auth_frame_roundtrip() {
+        let (mut client, mut server) = make_pair();
+
+        let fp = [0xAB; 32];
+        let auth = client.send_auth_init(fp).unwrap();
+        let event = server.open_inbound(auth).unwrap();
+        match event {
+            SessionEvent::Control(ControlFrame::AuthInit { cert_fingerprint }) => {
+                assert_eq!(cert_fingerprint, fp);
+            }
+            other => panic!("expected AuthInit, got {:?}", other),
+        }
+
+        let fp2 = [0xCD; 32];
+        let resp = server.send_auth_resp(fp2).unwrap();
+        let event = client.open_inbound(resp).unwrap();
+        match event {
+            SessionEvent::Control(ControlFrame::AuthResp { cert_fingerprint }) => {
+                assert_eq!(cert_fingerprint, fp2);
+            }
+            other => panic!("expected AuthResp, got {:?}", other),
         }
     }
 }

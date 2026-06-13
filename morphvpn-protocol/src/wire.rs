@@ -105,6 +105,8 @@ pub enum ControlFrame {
     PmtudProbe { probe_id: u16, target_size: u16 },
     PmtudAck { probe_id: u16, confirmed_size: u16 },
     Close { reason: u8 },
+    AuthInit { cert_fingerprint: [u8; 32] },
+    AuthResp { cert_fingerprint: [u8; 32] },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,6 +202,14 @@ impl ControlFrame {
                 out.put_u8(0x09);
                 out.put_u8(*reason);
             }
+            Self::AuthInit { cert_fingerprint } => {
+                out.put_u8(0x0A);
+                out.extend_from_slice(cert_fingerprint);
+            }
+            Self::AuthResp { cert_fingerprint } => {
+                out.put_u8(0x0B);
+                out.extend_from_slice(cert_fingerprint);
+            }
         }
         out.freeze()
     }
@@ -234,6 +244,12 @@ impl ControlFrame {
                 confirmed_size: decode_u16(&raw[3..5])?,
             }),
             0x09 if raw.len() == 2 => Ok(Self::Close { reason: raw[1] }),
+            0x0A if raw.len() == 33 => Ok(Self::AuthInit {
+                cert_fingerprint: decode_seed(&raw[1..33])?,
+            }),
+            0x0B if raw.len() == 33 => Ok(Self::AuthResp {
+                cert_fingerprint: decode_seed(&raw[1..33])?,
+            }),
             _ => Err(anyhow!("unknown or malformed control frame kind {kind:#x}")),
         }
     }
