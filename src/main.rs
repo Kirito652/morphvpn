@@ -234,7 +234,14 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_
         .unwrap_or_else(|| "https".into());
     let profile_params = config::ProfileParams::from_name(&profile_name);
 
+    let metrics_handle = metrics::MetricsHandle::new();
     let running = Arc::new(AtomicBool::new(true));
+
+    let mut shard_channels = Vec::with_capacity(num_shards);
+    for _ in 0..num_shards {
+        shard_channels.push(tokio::sync::mpsc::channel(1024));
+    }
+    let shard_senders_for_tcp: Vec<_> = shard_channels.iter().map(|(tx, _)| tx.clone()).collect();
 
     if let Some(ref tcp_cfg) = tcp_config {
         if tcp_cfg.enabled {
@@ -243,6 +250,7 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_
             let tcp_listener = transport::TcpServer::bind(tcp_addr).await?;
             info!("TCP fallback listening on {}", tcp_listener.local_addr()?);
             let running_clone = running.clone();
+            let senders = shard_senders_for_tcp.clone();
             tokio::spawn(async move {
                 loop {
                     if !running_clone.load(Ordering::Relaxed) {
@@ -251,7 +259,44 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_
                     match tcp_listener.accept().await {
                         Ok((stream, addr)) => {
                             info!("TCP connection from {}", addr);
-                            drop(stream);
+                            let mut tcp_conn = match transport::TcpTransport::from_stream(stream) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    tracing::error!("failed to wrap TCP stream: {}", e);
+                                    continue;
+                                }
+                            };
+                            let senders = senders.clone();
+                            tokio::spawn(async move {
+                                let mut buf = vec![0u8; 65535];
+                                loop {
+                                    match tcp_conn.recv(&mut buf).await {
+                                        Ok(len) => {
+                                            if len < 12 {
+                                                continue;
+                                            }
+                                            let packet = bytes::Bytes::copy_from_slice(&buf[..len]);
+                                            let mut tag = [0u8; 12];
+                                            tag.copy_from_slice(&packet[..12]);
+                                            let shard_id = crate::runtime::reactor::shard_for_tag(&tag, senders.len());
+                                            if let Some(sender) = senders.get(shard_id) {
+                                                let ingress = crate::runtime::reactor::ShardInbound::Udp(
+                                                    crate::runtime::reactor::UdpIngress {
+                                                        source: addr,
+                                                        packet,
+                                                        received_at: std::time::Instant::now(),
+                                                    }
+                                                );
+                                                let _ = sender.try_send(ingress);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::debug!("TCP connection from {} closed: {}", addr, e);
+                                            break;
+                                        }
+                                    }
+                                }
+                            });
                         }
                         Err(e) => {
                             tracing::error!("TCP accept error: {}", e);
@@ -267,10 +312,11 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_
             .with_context(|| "invalid health bind address")?;
         let health_server = health::HealthServer::bind(health_addr).await?;
         info!("health endpoint on {}", health_server.local_addr()?);
+        let peer_manager = Arc::new(tokio::sync::RwLock::new(peer::PeerManager::new()));
+        let metrics_for_health = metrics_handle.clone();
+        let pm_for_health = peer_manager.clone();
         tokio::spawn(async move {
-            let rx = Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let tx = Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let _ = health_server.run(rx, tx).await;
+            let _ = health_server.run(metrics_for_health, pm_for_health).await;
         });
     }
 
@@ -285,6 +331,8 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_
             cookie_master_key,
             profile: profile_params,
             running: running.clone(),
+            metrics: metrics_handle,
+            shard_channels: Some(shard_channels),
         }) => {
             running.store(false, Ordering::Relaxed);
             match result {

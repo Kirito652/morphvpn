@@ -35,7 +35,6 @@ struct RuntimePlumbing {
     metrics: MetricsHandle,
 }
 
-#[derive(Clone)]
 pub struct ServerRuntimeConfig {
     pub bind: SocketAddr,
     pub tun_name: String,
@@ -46,6 +45,8 @@ pub struct ServerRuntimeConfig {
     pub cookie_master_key: [u8; 32],
     pub profile: ProfileParams,
     pub running: Arc<AtomicBool>,
+    pub metrics: MetricsHandle,
+    pub shard_channels: Option<Vec<(mpsc::Sender<reactor::ShardInbound>, mpsc::Receiver<reactor::ShardInbound>)>>,
 }
 
 #[derive(Clone)]
@@ -62,7 +63,7 @@ pub struct ClientRuntimeConfig {
 
 pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
     let num_shards = config.num_shards.max(1);
-    let metrics = MetricsHandle::new();
+    let metrics = config.metrics;
     let socket = Arc::new(
         UdpSocket::bind(config.bind)
             .await
@@ -77,12 +78,21 @@ pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
     let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
     let (udp_tx, udp_rx) = mpsc::channel(UDP_TX_CHANNEL_CAPACITY);
     let (tun_tx, tun_rx) = mpsc::channel(TUN_COMMAND_CHANNEL_CAPACITY);
-    let mut shard_senders = Vec::with_capacity(num_shards);
+    let (shard_senders, shard_receivers) = if let Some(channels) = config.shard_channels {
+        channels.into_iter().unzip::<_, _, Vec<_>, Vec<_>>()
+    } else {
+        let mut senders = Vec::with_capacity(num_shards);
+        let mut receivers = Vec::with_capacity(num_shards);
+        for _ in 0..num_shards {
+            let (tx, rx) = mpsc::channel(SHARD_CHANNEL_CAPACITY);
+            senders.push(tx);
+            receivers.push(rx);
+        }
+        (senders, receivers)
+    };
     let mut joins = JoinSet::new();
 
-    for shard_id in 0..num_shards {
-        let (inbound_tx, inbound_rx) = mpsc::channel(SHARD_CHANNEL_CAPACITY);
-        shard_senders.push(inbound_tx);
+    for (shard_id, inbound_rx) in shard_receivers.into_iter().enumerate() {
         let worker = ShardWorker::new(
             shard_id,
             num_shards,
