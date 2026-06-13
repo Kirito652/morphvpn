@@ -157,6 +157,35 @@ impl MorphConfig {
             .with_context(|| format!("failed to parse config '{}'", path.display()))?;
         Ok(config)
     }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.server.is_none() && self.client.is_none() {
+            anyhow::bail!("config must define either [server] or [client] section");
+        }
+        if self.server.is_some() && self.client.is_some() {
+            anyhow::bail!("config cannot define both [server] and [client] sections");
+        }
+        if let Some(ref server) = self.server {
+            if server.bind.parse::<std::net::SocketAddr>().is_err() {
+                anyhow::bail!("invalid server bind address: {}", server.bind);
+            }
+            if !server.private_key.exists() {
+                anyhow::bail!("server private key not found: {}", server.private_key.display());
+            }
+            if !server.acl.exists() {
+                anyhow::bail!("server ACL file not found: {}", server.acl.display());
+            }
+        }
+        if let Some(ref client) = self.client {
+            if client.server.parse::<std::net::SocketAddr>().is_err() {
+                anyhow::bail!("invalid client server address: {}", client.server);
+            }
+            if !client.private_key.exists() {
+                anyhow::bail!("client private key not found: {}", client.private_key.display());
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn generate_cookie_key() -> [u8; 32] {

@@ -139,3 +139,38 @@ timeout_secs = 30
     assert_eq!(tcp.port, 51821);
     assert_eq!(tcp.timeout_secs, 30);
 }
+
+#[test]
+fn validate_rejects_empty_config() {
+    let config = MorphConfig::default();
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn validate_rejects_both_server_and_client() {
+    let toml = r#"
+[server]
+bind = "0.0.0.0:51820"
+private_key = "server.key"
+acl = "acl.toml"
+
+[client]
+server = "127.0.0.1:51820"
+private_key = "client.key"
+server_public_key = "aa"
+"#;
+    let config: MorphConfig = toml::from_str(toml).unwrap();
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn validate_rejects_invalid_address() {
+    let toml = r#"
+[server]
+bind = "not-a-valid-address"
+private_key = "server.key"
+acl = "acl.toml"
+"#;
+    let config: MorphConfig = toml::from_str(toml).unwrap();
+    assert!(config.validate().is_err());
+}
