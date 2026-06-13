@@ -4,6 +4,7 @@ pub mod shard;
 use crate::acl::AccessControlList;
 use crate::config::ProfileParams;
 use crate::metrics::MetricsHandle;
+use crate::peer::PeerManager;
 use anyhow::{anyhow, Context, Result};
 use morphvpn_protocol::handshake::{Seed, StaticIdentity};
 use reactor::{create_tun, ShardEvent, TunCommand, UdpOutbound};
@@ -13,7 +14,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinSet;
 use tracing::info;
 
@@ -46,6 +47,7 @@ pub struct ServerRuntimeConfig {
     pub profile: ProfileParams,
     pub running: Arc<AtomicBool>,
     pub metrics: MetricsHandle,
+    pub peer_manager: Arc<RwLock<PeerManager>>,
     pub shard_channels: Option<Vec<(mpsc::Sender<reactor::ShardInbound>, mpsc::Receiver<reactor::ShardInbound>)>>,
 }
 
@@ -59,6 +61,7 @@ pub struct ClientRuntimeConfig {
     pub requested_ip: Ipv4Addr,
     pub profile: ProfileParams,
     pub running: Arc<AtomicBool>,
+    pub peer_manager: Arc<RwLock<PeerManager>>,
 }
 
 pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
@@ -107,6 +110,7 @@ pub async fn run_server(config: ServerRuntimeConfig) -> Result<()> {
                 keepalive_interval: Duration::from_secs(config.profile.keepalive_secs),
                 keepalive_timeout: Duration::from_secs(config.profile.keepalive_secs * 3),
                 running: config.running.clone(),
+                peer_manager: config.peer_manager.clone(),
             }),
         )?;
         joins.spawn(async move { worker.run().await });
@@ -167,6 +171,7 @@ pub async fn run_client(config: ClientRuntimeConfig) -> Result<()> {
             keepalive_interval: Duration::from_secs(ka_secs),
             keepalive_timeout: Duration::from_secs(ka_secs * 3),
             running: config.running.clone(),
+            peer_manager: config.peer_manager.clone(),
         }),
     )?;
     joins.spawn(async move { worker.run().await });

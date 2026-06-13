@@ -1,5 +1,6 @@
 use crate::acl::AccessControlList;
 use crate::config::ProfileParams;
+use crate::peer::PeerManager;
 use crate::runtime::reactor::{
     extract_routing_tag, parse_ipv4_destination, parse_ipv4_source, shard_for_tag, RouteUpdate,
     ShardEvent, ShardInbound, TunWrite, UdpOutbound,
@@ -20,7 +21,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 
 use rand::Rng;
@@ -46,6 +47,7 @@ pub struct ServerShardConfig {
     pub keepalive_interval: Duration,
     pub keepalive_timeout: Duration,
     pub running: Arc<AtomicBool>,
+    pub peer_manager: Arc<RwLock<PeerManager>>,
 }
 
 #[derive(Clone)]
@@ -59,6 +61,7 @@ pub struct ClientShardConfig {
     pub keepalive_interval: Duration,
     pub keepalive_timeout: Duration,
     pub running: Arc<AtomicBool>,
+    pub peer_manager: Arc<RwLock<PeerManager>>,
 }
 
 pub struct ShardWorker {
@@ -70,6 +73,7 @@ pub struct ShardWorker {
     mode: ShardMode,
     profile: ProfileParams,
     running: Arc<AtomicBool>,
+    peer_manager: Arc<RwLock<PeerManager>>,
 }
 
 enum ShardMode {
@@ -125,11 +129,12 @@ impl ShardWorker {
         event_tx: mpsc::Sender<ShardEvent>,
         mode: ShardModeConfig,
     ) -> Result<Self> {
-        let (cookie_master_key, profile, running, mode) = match mode {
+        let (cookie_master_key, profile, running, peer_manager, mode) = match mode {
             ShardModeConfig::Server(config) => {
                 let key = config.cookie_master_key;
                 let profile = config.profile.clone();
                 let running = config.running.clone();
+                let peer_manager = config.peer_manager.clone();
                 let mode = ShardMode::Server(Box::new(ServerShardState {
                     identity: config.identity,
                     psk: config.psk,
@@ -142,14 +147,15 @@ impl ShardWorker {
                     peer_routes: HashMap::new(),
                     rate_buckets: HashMap::new(),
                 }));
-                (key, profile, running, mode)
+                (key, profile, running, peer_manager, mode)
             }
             ShardModeConfig::Client(config) => {
                 let profile = config.profile.clone();
                 let running = config.running.clone();
+                let peer_manager = config.peer_manager.clone();
                 let keepalive_interval = config.keepalive_interval;
                 let keepalive_timeout = config.keepalive_timeout;
-                ([0u8; 32], profile, running, ShardMode::Client(Box::new(ClientShardState {
+                ([0u8; 32], profile, running, peer_manager, ShardMode::Client(Box::new(ClientShardState {
                     config,
                     pending_client: None,
                     established: None,
@@ -170,6 +176,7 @@ impl ShardWorker {
             mode,
             profile,
             running,
+            peer_manager,
         })
     }
 
@@ -267,7 +274,7 @@ impl ShardWorker {
 
                 for tag in dead_peers {
                     info!("removing dead peer on shard {}", shard_id);
-                    Self::remove_server_session(&event_tx, shard_id, state, tag);
+                    Self::remove_server_session(&event_tx, shard_id, state, tag, &self.peer_manager).await;
                 }
             }
             ShardMode::Client(state) => {
@@ -308,6 +315,7 @@ impl ShardWorker {
                         warn!("server appears dead, reconnecting");
                         state.established = None;
                         state.bootstrap_pending = false;
+                        self.peer_manager.write().await.remove_peer(&state.config.server_addr);
                     }
                 }
 
@@ -342,6 +350,7 @@ impl ShardWorker {
                     source,
                     packet,
                     received_at,
+                    &self.peer_manager,
                 )
                 .await
             }
@@ -354,6 +363,7 @@ impl ShardWorker {
                     source,
                     packet,
                     received_at,
+                    &self.peer_manager,
                 )
                 .await
             }
@@ -400,6 +410,7 @@ impl ShardWorker {
         source: SocketAddr,
         packet: Bytes,
         received_at: Instant,
+        peer_manager: &Arc<RwLock<PeerManager>>,
     ) -> Result<()> {
         let Some(routing_tag) = extract_routing_tag(&packet) else {
             return Ok(());
@@ -413,7 +424,7 @@ impl ShardWorker {
             } else {
                 return Ok(());
             };
-            Self::process_server_session_event_with(shard_id, event_tx, state, routing_tag, event)
+            Self::process_server_session_event_with(shard_id, event_tx, state, routing_tag, event, peer_manager)
                 .await?;
             return Ok(());
         }
@@ -445,6 +456,14 @@ impl ShardWorker {
                             pmtud: PmtudState::new(state.profile.mtu as u16),
                         },
                     );
+                    if let Some(slot) = state.established.get(&routing_tag) {
+                        let mut pm = peer_manager.write().await;
+                        pm.add_peer(source);
+                        pm.set_state(&source, crate::peer::PeerState::Established);
+                        if let Some(ip) = slot.session.assigned_ip() {
+                            pm.set_assigned_ip(&source, ip);
+                        }
+                    }
                     return Ok(());
                 }
             }
@@ -513,6 +532,7 @@ impl ShardWorker {
         state: &mut ServerShardState,
         routing_tag: RoutingTag,
         event: SessionEvent,
+        peer_manager: &Arc<RwLock<PeerManager>>,
     ) -> Result<()> {
         match event {
             SessionEvent::Control(frame) => match frame {
@@ -547,7 +567,7 @@ impl ShardWorker {
                     }
                 }
                 ControlFrame::Close { .. } => {
-                    Self::remove_server_session(event_tx, shard_id, state, routing_tag);
+                    Self::remove_server_session(event_tx, shard_id, state, routing_tag, peer_manager).await;
                 }
                 ControlFrame::RekeyInit { epoch, public_key } => {
                     if let Some(slot) = state.established.get_mut(&routing_tag) {
@@ -609,6 +629,7 @@ impl ShardWorker {
         source: SocketAddr,
         packet: Bytes,
         received_at: Instant,
+        peer_manager: &Arc<RwLock<PeerManager>>,
     ) -> Result<()> {
         if let Ok(frame) = decode_handshake_frame(packet.clone()) {
             if frame.kind == HandshakeKind::CookieReply {
@@ -633,6 +654,14 @@ impl ShardWorker {
                         pmtud: PmtudState::new(state.config.profile.mtu as u16),
                     });
                     state.bootstrap_pending = true;
+                    {
+                        let mut pm = peer_manager.write().await;
+                        let server_addr = state.config.server_addr;
+                        if pm.get_peer(&server_addr).is_none() {
+                            pm.add_peer(server_addr);
+                        }
+                        pm.set_state(&server_addr, crate::peer::PeerState::Established);
+                    }
                 }
                 return Ok(());
             }
@@ -656,6 +685,7 @@ impl ShardWorker {
                 ControlFrame::Close { .. } => {
                     state.established = None;
                     state.bootstrap_pending = false;
+                    peer_manager.write().await.remove_peer(&state.config.server_addr);
                 }
                 ControlFrame::RekeyInit { epoch, public_key } => {
                     if let Some(slot) = state.established.as_mut() {
@@ -697,11 +727,12 @@ impl ShardWorker {
         Ok(())
     }
 
-    fn remove_server_session(
+    async fn remove_server_session(
         event_tx: &mpsc::Sender<ShardEvent>,
         shard_id: usize,
         state: &mut ServerShardState,
         routing_tag: RoutingTag,
+        peer_manager: &Arc<RwLock<PeerManager>>,
     ) {
         if let Some(slot) = state.established.remove(&routing_tag) {
             if let Some(assigned_ip) = slot.session.assigned_ip() {
@@ -710,6 +741,8 @@ impl ShardWorker {
                     destination: assigned_ip,
                 });
             }
+            let peer_addr = slot.session.peer_addr();
+            peer_manager.write().await.remove_peer(&peer_addr);
         }
     }
 

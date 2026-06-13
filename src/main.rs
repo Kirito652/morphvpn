@@ -307,12 +307,13 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_
         }
     }
 
+    let peer_manager = Arc::new(tokio::sync::RwLock::new(peer::PeerManager::new()));
+
     if let Some(ref hc) = health_cfg {
         let health_addr: SocketAddr = hc.bind.parse()
             .with_context(|| "invalid health bind address")?;
         let health_server = health::HealthServer::bind(health_addr).await?;
         info!("health endpoint on {}", health_server.local_addr()?);
-        let peer_manager = Arc::new(tokio::sync::RwLock::new(peer::PeerManager::new()));
         let metrics_for_health = metrics_handle.clone();
         let pm_for_health = peer_manager.clone();
         tokio::spawn(async move {
@@ -332,6 +333,7 @@ async fn run_server(args: ServerArgs, cfg: Option<config::ServerConfig>, config_
             profile: profile_params,
             running: running.clone(),
             metrics: metrics_handle,
+            peer_manager,
             shard_channels: Some(shard_channels),
         }) => {
             running.store(false, Ordering::Relaxed);
@@ -402,6 +404,7 @@ async fn run_client(args: ClientArgs, cfg: Option<config::ClientConfig>, config_
     let profile_params = config::ProfileParams::from_name(&profile_name);
 
     let running = Arc::new(AtomicBool::new(true));
+    let peer_manager = Arc::new(tokio::sync::RwLock::new(peer::PeerManager::new()));
 
     tokio::select! {
         result = runtime::run_client(ClientRuntimeConfig {
@@ -413,6 +416,7 @@ async fn run_client(args: ClientArgs, cfg: Option<config::ClientConfig>, config_
             requested_ip,
             profile: profile_params,
             running: running.clone(),
+            peer_manager,
         }) => {
             running.store(false, Ordering::Relaxed);
             match result {
