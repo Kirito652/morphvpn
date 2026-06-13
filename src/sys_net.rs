@@ -70,6 +70,19 @@ impl NetworkGuard {
         self.cleaned_up = true;
 
         #[cfg(target_os = "linux")]
+        linux_unblock_ipv6(&self.config.tun_name);
+
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(adapter) = windows_resolve_adapter_name(&self.config.tun_name) {
+                windows_unblock_ipv6(&adapter);
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        macos_unblock_ipv6(&self.config.tun_name);
+
+        #[cfg(target_os = "linux")]
         if self.is_server {
             linux_cleanup_nat(&self.config.tun_name, self.wan_iface.as_deref());
             linux_remove_tun_ip(
@@ -126,6 +139,7 @@ pub fn setup_server(config: NetConfig) -> Result<NetworkGuard> {
         reapply_server_tun(&config)?;
         linux_cleanup_nat(&config.tun_name, Some(&wan));
         linux_add_nat(&config.tun_name, &wan)?;
+        linux_block_ipv6(&config.tun_name)?;
 
         return Ok(NetworkGuard {
             config,
@@ -142,6 +156,7 @@ pub fn setup_server(config: NetConfig) -> Result<NetworkGuard> {
     {
         let adapter = windows_resolve_adapter_name(&config.tun_name)?;
         windows_assign_ip(&adapter, &config.tun_ip, config.prefix_len)?;
+        windows_block_ipv6(&adapter)?;
         Ok(NetworkGuard {
             config,
             pinned_server_ip: None,
@@ -157,6 +172,7 @@ pub fn setup_server(config: NetConfig) -> Result<NetworkGuard> {
         macos_link_up(&config.tun_name)?;
         macos_enable_ip_forward()?;
         macos_add_nat(&config.tun_name)?;
+        macos_block_ipv6(&config.tun_name)?;
         return Ok(NetworkGuard {
             config,
             pinned_server_ip: None,
@@ -182,6 +198,7 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
     #[cfg(target_os = "linux")]
     {
         reapply_client_tun(&config)?;
+        linux_block_ipv6(&config.tun_name)?;
 
         if let Some(ref dns_server) = config.dns_server {
             linux_add_dns_redirect(dns_server)?;
@@ -199,9 +216,10 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
     #[cfg(target_os = "windows")]
     {
         reapply_client_tun(&config)?;
+        let adapter = windows_resolve_adapter_name(&config.tun_name)?;
+        windows_block_ipv6(&adapter)?;
 
         if let Some(ref dns_server) = config.dns_server {
-            let adapter = windows_resolve_adapter_name(&config.tun_name)?;
             windows_add_dns_redirect(&adapter, dns_server)?;
         }
 
@@ -218,6 +236,7 @@ pub fn setup_client(config: NetConfig) -> Result<NetworkGuard> {
     {
         macos_assign_ip(&config.tun_name, &config.tun_ip, config.prefix_len)?;
         macos_link_up(&config.tun_name)?;
+        macos_block_ipv6(&config.tun_name)?;
         return Ok(NetworkGuard {
             pinned_server_ip: config.server_ip,
             config,
@@ -887,6 +906,51 @@ fn macos_add_nat(_tun_iface: &str) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 fn macos_cleanup_nat(_tun_iface: &str) {}
+
+#[cfg(target_os = "linux")]
+fn linux_block_ipv6(iface: &str) -> Result<()> {
+    let _ = run_cmd("ip", &["-6", "addr", "flush", "dev", iface]);
+    let _ = run_cmd("ip", &["-6", "route", "del", "default", "dev", iface]);
+    let _ = run_cmd(
+        "sysctl",
+        &["-w", &format!("net.ipv6.conf.{}.disable_ipv6=1", iface)],
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_unblock_ipv6(iface: &str) {
+    let _ = run_cmd(
+        "sysctl",
+        &["-w", &format!("net.ipv6.conf.{}.disable_ipv6=0", iface)],
+    );
+}
+
+#[cfg(target_os = "windows")]
+fn windows_block_ipv6(adapter: &str) -> Result<()> {
+    let _ = run_cmd(
+        "netsh",
+        &["interface", "ipv6", "set", "interface", adapter, "disable"],
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_unblock_ipv6(adapter: &str) {
+    let _ = run_cmd(
+        "netsh",
+        &["interface", "ipv6", "set", "interface", adapter, "enable"],
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn macos_block_ipv6(iface: &str) -> Result<()> {
+    let _ = run_cmd("ifconfig", &[iface, "inet6", "-autoconf"]);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_unblock_ipv6(_iface: &str) {}
 
 fn run_cmd(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
