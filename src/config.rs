@@ -22,6 +22,7 @@ pub struct ServerConfig {
     pub cookie: Option<CookieConfig>,
     #[serde(default)]
     pub no_auto_net: bool,
+    pub cert: Option<CertConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -39,6 +40,7 @@ pub struct ClientConfig {
     #[serde(default)]
     pub no_auto_net: bool,
     pub dns: Option<DnsConfig>,
+    pub cert: Option<CertConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -67,6 +69,15 @@ fn default_tun() -> String { "tun0".into() }
 fn default_tun_ip_server() -> String { "10.8.0.1".into() }
 fn default_tun_ip_client() -> String { "10.8.0.2".into() }
 fn default_gateway() -> String { "10.8.0.1".into() }
+#[derive(Debug, Deserialize, Clone)]
+pub struct CertConfig {
+    pub cert: PathBuf,
+    pub key: PathBuf,
+    #[serde(default = "default_verify_peer")]
+    pub verify_peer: bool,
+}
+
+fn default_verify_peer() -> bool { true }
 fn default_rotation_secs() -> u64 { 60 }
 fn default_dns_server() -> String { "1.1.1.1".into() }
 
@@ -90,7 +101,7 @@ impl ProfileParams {
                 keepalive_secs: 10,
                 mtu: 1400,
             },
-            "https" | _ => Self {
+            _ => Self {
                 padding_range: (8, 32),
                 keepalive_secs: 15,
                 mtu: 1104,

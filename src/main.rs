@@ -40,6 +40,7 @@ enum Commands {
     Server(ServerArgs),
     Client(ClientArgs),
     Keygen(KeygenArgs),
+    Certgen(CertgenArgs),
     Example,
 }
 
@@ -101,6 +102,16 @@ struct KeygenArgs {
     public_out: PathBuf,
 }
 
+#[derive(Args)]
+struct CertgenArgs {
+    #[arg(long)]
+    cn: String,
+    #[arg(long)]
+    cert_out: PathBuf,
+    #[arg(long)]
+    key_out: PathBuf,
+}
+
 #[derive(ValueEnum, Clone, Copy, Debug)]
 enum ProfileArg {
     Https,
@@ -128,6 +139,7 @@ async fn main() -> Result<()> {
         Commands::Server(args) => run_server(args, server_cfg, config_profile).await?,
         Commands::Client(args) => run_client(args, client_cfg, config_profile).await?,
         Commands::Keygen(args) => run_keygen(args)?,
+        Commands::Certgen(args) => run_certgen(args)?,
         Commands::Example => print_example(),
     }
 
@@ -309,6 +321,16 @@ fn run_keygen(args: KeygenArgs) -> Result<()> {
     write_private_key_file(&args.private_out, &identity.private)?;
     write_public_key_file(&args.public_out, &identity.public)?;
     println!("{}", hex::encode(identity.public));
+    Ok(())
+}
+
+fn run_certgen(args: CertgenArgs) -> Result<()> {
+    let identity = cert::CertIdentity::generate_cn(&args.cn)?;
+    cert::CertIdentity::save_cert(&args.cert_out, &identity.cert_pem)?;
+    cert::CertIdentity::save_key(&args.key_out, &identity.key_pem)?;
+    println!("certificate: {}", args.cert_out.display());
+    println!("key: {}", args.key_out.display());
+    println!("fingerprint: {}", hex::encode(identity.fingerprint));
     Ok(())
 }
 

@@ -69,3 +69,22 @@ prevent_leak = true
     assert_eq!(dns.server, "8.8.8.8");
     assert!(dns.prevent_leak);
 }
+
+#[test]
+fn parse_config_with_certs() {
+    let toml = r#"
+[server]
+bind = "0.0.0.0:51820"
+private_key = "server.key"
+acl = "acl.toml"
+
+[server.cert]
+cert = "server.pem"
+key = "server-key.pem"
+verify_peer = true
+"#;
+    let config: MorphConfig = toml::from_str(toml).unwrap();
+    let cert = config.server.as_ref().unwrap().cert.as_ref().unwrap();
+    assert!(cert.verify_peer);
+    assert_eq!(cert.cert.to_str().unwrap(), "server.pem");
+}
