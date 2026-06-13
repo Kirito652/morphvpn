@@ -121,13 +121,40 @@ enum ProfileArg {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("morphvpn=info")),
-        )
-        .init();
-
     let cli = Cli::parse();
+
+    let log_config = if let Some(config_path) = &cli.config {
+        config::MorphConfig::load(config_path).ok()
+    } else {
+        None
+    }.and_then(|c| c.log);
+
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            let level = log_config.as_ref()
+                .map(|c| c.level.as_str())
+                .unwrap_or("morphvpn=info");
+            EnvFilter::new(level)
+        });
+
+    let format = log_config.as_ref()
+        .map(|c| c.format.as_str())
+        .unwrap_or("pretty");
+
+    match format {
+        "json" => {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .json()
+                .init();
+        }
+        _ => {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .init();
+        }
+    }
+
     let (server_cfg, client_cfg, config_profile) = if let Some(config_path) = &cli.config {
         let cfg = config::MorphConfig::load(config_path)?;
         (cfg.server, cfg.client, cfg.profile)

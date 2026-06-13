@@ -7,6 +7,7 @@ pub struct MorphConfig {
     pub server: Option<ServerConfig>,
     pub client: Option<ClientConfig>,
     pub profile: Option<String>,
+    pub log: Option<LogConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -91,8 +92,18 @@ pub struct KeepaliveConfig {
     pub timeout_secs: u64,
 }
 
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct LogConfig {
+    #[serde(default = "default_log_format")]
+    pub format: String,
+    #[serde(default = "default_log_level")]
+    pub level: String,
+}
+
 fn default_keepalive_interval() -> u64 { 15 }
 fn default_keepalive_timeout() -> u64 { 45 }
+fn default_log_format() -> String { "pretty".into() }
+fn default_log_level() -> String { "morphvpn=info".into() }
 
 #[derive(Debug, Clone)]
 pub struct ProfileParams {

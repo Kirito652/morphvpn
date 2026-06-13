@@ -106,3 +106,16 @@ timeout_secs = 30
     assert_eq!(ka.interval_secs, 10);
     assert_eq!(ka.timeout_secs, 30);
 }
+
+#[test]
+fn parse_config_with_log() {
+    let toml = r#"
+[log]
+format = "json"
+level = "debug"
+"#;
+    let config: MorphConfig = toml::from_str(toml).unwrap();
+    let log = config.log.as_ref().unwrap();
+    assert_eq!(log.format, "json");
+    assert_eq!(log.level, "debug");
+}
